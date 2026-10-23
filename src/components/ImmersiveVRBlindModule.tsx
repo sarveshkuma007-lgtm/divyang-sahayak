@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Compass, 
   Headphones, 
@@ -14,7 +14,12 @@ import {
   Users,
   ShieldCheck,
   Radio,
-  Footprints
+  Footprints,
+  Mic,
+  MicOff,
+  VolumeX,
+  Accessibility,
+  CheckCircle2
 } from 'lucide-react';
 import { SensorySettings, VRVirtualWorld } from '../types';
 import { triggerHaptic, HAPTIC_PATTERNS } from '../services/haptics';
@@ -127,9 +132,146 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [eyesClosedMode, setEyesClosedMode] = useState(false);
-  const [compassDegrees, setCompassDegrees] = useState(15);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('Ready. Choose a journey or say Start when voice control is enabled.');
+  const [audioEnabled, setAudioEnabled] = useState(true);
+  const recognitionRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const currentStep = selectedWorld.steps[activeStepIndex];
+
+  const announce = (message: string) => {
+    setStatusMessage(message);
+    if (audioEnabled) speakText(message, settings.uiLanguage, settings.voiceSpeed);
+  };
+
+  // Real device vibration where supported; retain the app's existing haptic service.
+  const vibrate = (pattern: number | number[]) => {
+    if (!settings.hapticFeedback) {
+      setStatusMessage('Vibration is disabled in your accessibility settings.');
+      return;
+    }
+    let supported = false;
+    try {
+      supported = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+      if (supported) navigator.vibrate(pattern);
+    } catch {
+      supported = false;
+    }
+    try { triggerHaptic(Array.isArray(pattern) ? pattern : [pattern]); } catch { /* optional hardware service */ }
+    setStatusMessage(supported
+      ? 'Vibration pattern sent to your device. Actual vibration depends on device and browser support.'
+      : 'This browser does not expose device vibration. The app haptic service was also requested if available.');
+  };
+
+  // Short left/centre/right audio cues using the Web Audio stereo panner.
+  // These are simulated directional cues, not recordings of the real world.
+  const playDirectionalCue = (pan: number, frequency: number) => {
+    if (!audioEnabled || typeof window === 'undefined') return;
+    try {
+      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextCtor) {
+        setStatusMessage('Directional audio is not supported in this browser.');
+        return;
+      }
+      const context: AudioContext = audioContextRef.current || new AudioContextCtor();
+      audioContextRef.current = context;
+      if (context.state === 'suspended') void context.resume();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const panner = context.createStereoPanner ? context.createStereoPanner() : null;
+      oscillator.type = 'sine';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.42);
+      if (panner) {
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        oscillator.connect(gain).connect(panner).connect(context.destination);
+      } else {
+        oscillator.connect(gain).connect(context.destination);
+      }
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.45);
+      setStatusMessage(pan < -0.2 ? 'Directional audio cue: left.' : pan > 0.2 ? 'Directional audio cue: right.' : 'Directional audio cue: ahead / centre.');
+    } catch {
+      setStatusMessage('Could not play directional audio. Check browser sound permissions.');
+    }
+  };
+
+  const stopJourney = () => {
+    stopAmbientSoundscape();
+    window.speechSynthesis?.cancel();
+    setIsPlaying(false);
+    setStatusMessage('Journey paused. Select Start Sensory Walk to continue.');
+  };
+
+  const startVoiceControl = () => {
+    const speechWindow = window as any;
+    const SpeechRecognitionCtor = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setStatusMessage('Voice control is not supported by this browser. Try a supported browser and allow microphone access.');
+      announce('Voice control is not supported by this browser. You can still use the accessible buttons.');
+      return;
+    }
+    try {
+      if (recognitionRef.current) recognitionRef.current.stop();
+      const recognition = new SpeechRecognitionCtor();
+      recognition.lang = settings.uiLanguage === 'hi' ? 'hi-IN' : 'en-IN';
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.onresult = (event: any) => {
+        const result = event.results?.[event.results.length - 1]?.[0]?.transcript?.toLowerCase().trim() || '';
+        if (!result) return;
+        if (/\b(start|शुरू|चालू)\b/.test(result)) {
+          if (!isPlaying) togglePlay(); else announce('Sensory journey is already playing.');
+        } else if (/\b(pause|stop|रुको|बंद)\b/.test(result)) {
+          stopJourney();
+        } else if (/\b(next|forward|अगला|आगे)\b/.test(result)) {
+          if (activeStepIndex < selectedWorld.steps.length - 1) advanceStep(activeStepIndex + 1);
+          else announce('You are at the last zone.');
+        } else if (/\b(previous|back|पिछला|पीछे)\b/.test(result)) {
+          if (activeStepIndex > 0) advanceStep(activeStepIndex - 1);
+          else announce('You are at the first zone.');
+        } else if (/\b(repeat|again|दोहराओ|फिर)\b/.test(result)) {
+          announce(`${currentStep.title}. ${currentStep.audioNarration}`);
+        } else if (/\b(vibrat(e|ion)|वाइब्रेशन|कंपन)\b/.test(result)) {
+          vibrate(currentStep.tactileVibe || [100, 50, 100]);
+        } else if (/\b(left|बायें|बाएं)\b/.test(result)) {
+          playDirectionalCue(-1, 440);
+        } else if (/\b(right|दायें|दाएं)\b/.test(result)) {
+          playDirectionalCue(1, 660);
+        } else if (/\b(centre|center|ahead|आगे सामने)\b/.test(result)) {
+          playDirectionalCue(0, 550);
+        } else {
+          announce(`I heard: ${result}. Try Start, Pause, Next zone, Previous zone, Repeat, Vibration, Left cue, or Right cue.`);
+        }
+      };
+      recognition.onerror = (event: any) => {
+        setVoiceListening(false);
+        setStatusMessage(`Voice control stopped: ${event.error || 'microphone error'}. Check microphone permission or use buttons.`);
+      };
+      recognition.onend = () => setVoiceListening(false);
+      recognitionRef.current = recognition;
+      recognition.start();
+      setVoiceListening(true);
+      announce('Voice control is listening. Say Start, Pause, Next zone, Previous zone, Repeat, Vibration, Left cue, or Right cue.');
+    } catch {
+      setVoiceListening(false);
+      setStatusMessage('Could not start voice control. Allow microphone access and try again.');
+    }
+  };
+
+  const toggleVoiceControl = () => {
+    if (voiceListening) {
+      try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
+      recognitionRef.current = null;
+      setVoiceListening(false);
+      announce('Voice control stopped.');
+    } else {
+      startVoiceControl();
+    }
+  };
 
   // Start / Pause Sensory Journey
   const togglePlay = () => {
@@ -137,38 +279,48 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
       stopAmbientSoundscape();
       setIsPlaying(false);
       window.speechSynthesis?.cancel();
-    } else {
-      setIsPlaying(true);
-      playAmbientSoundscape(selectedWorld.soundscapeType);
-      triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
-      speakText(
-        `Starting sensory journey in ${selectedWorld.name}. Step 1: ${currentStep.title}. ${currentStep.audioNarration}`,
-        settings.uiLanguage,
-        settings.voiceSpeed
-      );
+      setStatusMessage('Journey paused.');
+      return;
     }
+
+    setIsPlaying(true);
+    if (audioEnabled) playAmbientSoundscape(selectedWorld.soundscapeType);
+    if (settings.hapticFeedback) vibrate(HAPTIC_PATTERNS.SUCCESS);
+    announce(`Starting simulated sensory journey in ${selectedWorld.name}. Zone ${activeStepIndex + 1}: ${currentStep.title}. ${currentStep.audioNarration}`);
   };
 
   const advanceStep = (nextIdx: number) => {
-    if (nextIdx >= selectedWorld.steps.length) return;
+    // Guard both ends so Previous/Next can never select an invalid zone.
+    if (nextIdx < 0 || nextIdx >= selectedWorld.steps.length) return;
+
     setActiveStepIndex(nextIdx);
     const step = selectedWorld.steps[nextIdx];
 
-    // Trigger step tactile pulse
-    if (settings.hapticFeedback && step.tactileVibe) {
-      triggerHaptic(step.tactileVibe);
+    if (settings.hapticFeedback && step.tactileVibe) vibrate(step.tactileVibe);
+
+    try { playTurnCue('straight'); } catch { /* optional audio cue service */ }
+    announce(`${step.title}. ${step.audioNarration}`);
+  };
+
+  const selectWorld = (world: VRVirtualWorld) => {
+    window.speechSynthesis?.cancel();
+    setSelectedWorld(world);
+    setActiveStepIndex(0);
+
+    if (isPlaying) {
+      stopAmbientSoundscape();
+      if (audioEnabled) playAmbientSoundscape(world.soundscapeType);
+      const firstStep = world.steps[0];
+      announce(`${world.name}. Zone 1: ${firstStep.title}. ${firstStep.audioNarration}`);
     }
-
-    // Step turn cue
-    playTurnCue('straight');
-
-    // Narrate spatial step
-    speakText(`${step.title}. ${step.audioNarration}`, settings.uiLanguage, settings.voiceSpeed);
   };
 
   useEffect(() => {
     return () => {
       stopAmbientSoundscape();
+      window.speechSynthesis?.cancel();
+      try { recognitionRef.current?.stop(); } catch { /* optional */ }
+      try { audioContextRef.current?.close(); } catch { /* optional */ }
     };
   }, []);
 
@@ -185,7 +337,7 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
             </h2>
           </div>
           <p className="text-xs text-slate-300 mt-0.5">
-            "Close your eyes and travel anywhere" — Real-time AI spatial audio orientation, acoustic soundscapes, and tactile haptic footsteps.
+            A guided, simulated sensory journey with spoken scene descriptions, ambient soundscapes, and optional device vibration.
           </p>
         </div>
 
@@ -213,7 +365,7 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
           <EyeOff className="w-10 h-10 mx-auto text-yellow-400 animate-pulse" />
           <h3 className="text-lg font-bold">Eyes Closed Sensory Mode Active</h3>
           <p className="text-sm max-w-lg mx-auto text-yellow-200/90 leading-relaxed">
-            Screen visual strain is zero. Put on your headphones or hearing aids, relax, and navigate using 3D spatial soundscapes, tactile cane vibrations, and AI voice orientation prompts.
+            Screen visual strain is zero. Put on your headphones or hearing aids, relax, and use spoken descriptions, simulated directional audio cues, and device vibration when supported. This is a simulation, not live navigation.
           </p>
           <div className="flex justify-center gap-3 pt-2">
             <button
@@ -235,6 +387,34 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
         </div>
       )}
 
+      {/* Accessible voice, audio, and haptic controls */}
+      <section aria-labelledby="sensory-controls-title" className="p-4 rounded-2xl bg-slate-900 border border-cyan-900 space-y-3">
+        <div className="flex items-center gap-2">
+          <Accessibility className="w-5 h-5 text-cyan-300" />
+          <h3 id="sensory-controls-title" className="font-bold text-white">Accessible sensory controls</h3>
+        </div>
+        <p className="text-sm text-slate-300">Use voice commands or large buttons. This is a simulated journey; cues do not detect real-world hazards.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={toggleVoiceControl} aria-pressed={voiceListening} className={`min-h-12 px-4 py-3 rounded-xl font-bold text-sm flex items-center gap-2 ${voiceListening ? 'bg-amber-400 text-slate-950' : 'bg-cyan-500 text-slate-950'}`}>
+            {voiceListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            {voiceListening ? 'Stop voice control' : 'Enable voice control'}
+          </button>
+          <button type="button" onClick={() => { setAudioEnabled(v => !v); if (audioEnabled) { window.speechSynthesis?.cancel(); stopAmbientSoundscape(); setStatusMessage('Audio muted.'); } else { setStatusMessage('Audio enabled. Use Repeat narration to hear this zone.'); } }} aria-pressed={audioEnabled} className="min-h-12 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-white font-semibold text-sm flex items-center gap-2">
+            {audioEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />} {audioEnabled ? 'Mute audio' : 'Enable audio'}
+          </button>
+          <button type="button" onClick={() => vibrate(currentStep.tactileVibe || [100, 50, 100])} className="min-h-12 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-amber-300 font-semibold text-sm flex items-center gap-2">
+            <Vibrate className="w-5 h-5" /> Test vibration
+          </button>
+          <button type="button" onClick={() => playDirectionalCue(-1, 440)} className="min-h-12 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-white font-semibold text-sm">Play left cue</button>
+          <button type="button" onClick={() => playDirectionalCue(0, 550)} className="min-h-12 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-white font-semibold text-sm">Play centre cue</button>
+          <button type="button" onClick={() => playDirectionalCue(1, 660)} className="min-h-12 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-white font-semibold text-sm">Play right cue</button>
+        </div>
+        <div role="status" aria-live="polite" className="rounded-lg bg-slate-950 p-3 text-sm text-cyan-100 flex items-start gap-2">
+          <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> <span>{statusMessage}</span>
+        </div>
+        <p className="text-xs text-amber-200">Voice control requires browser microphone permission. Vibration and stereo positioning vary by device. Do not use this simulation as a real-world obstacle detector.</p>
+      </section>
+
       {/* World Selection Carousel */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {VR_WORLDS.map((world) => (
@@ -242,11 +422,7 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
             key={world.id}
             onClick={() => {
               triggerHaptic(HAPTIC_PATTERNS.CLICK);
-              setSelectedWorld(world);
-              setActiveStepIndex(0);
-              if (isPlaying) {
-                playAmbientSoundscape(world.soundscapeType);
-              }
+              selectWorld(world);
             }}
             className={`p-4 rounded-xl border text-left transition-all ${
               selectedWorld.id === world.id
@@ -284,6 +460,8 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
           <div className="flex items-center gap-2">
             {/* Play / Pause Virtual Walk */}
             <button
+              type="button"
+              aria-pressed={isPlaying}
               onClick={togglePlay}
               className={`flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl transition-all ${
                 isPlaying
@@ -308,7 +486,7 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="flex items-center gap-1.5">
               <Volume2 className="w-3.5 h-3.5 text-cyan-400" />
-              Binaural Spatial Audio Narration
+              Spoken Scene Narration
             </span>
             <span className="font-mono">Step {activeStepIndex + 1} of {selectedWorld.steps.length}</span>
           </div>
@@ -342,7 +520,7 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
               <span>Feel Ground Texture Vibration</span>
             </button>
             <button
-              onClick={() => speakText(currentStep.audioNarration, settings.uiLanguage, settings.voiceSpeed)}
+              onClick={() => announce(`${currentStep.title}. ${currentStep.audioNarration}`)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-cyan-300 font-semibold border border-slate-700"
             >
               <Volume2 className="w-4 h-4" />
@@ -353,6 +531,8 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
           {/* Next Sensory Step Navigation */}
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
+              type="button"
+              aria-label="Previous sensory zone"
               onClick={() => advanceStep(activeStepIndex - 1)}
               disabled={activeStepIndex === 0}
               className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-800 disabled:opacity-40 text-slate-300 border border-slate-700"
@@ -360,6 +540,8 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
               Previous Zone
             </button>
             <button
+              type="button"
+              aria-label="Next sensory zone"
               onClick={() => advanceStep(activeStepIndex + 1)}
               disabled={activeStepIndex === selectedWorld.steps.length - 1}
               className="flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center gap-1.5"
@@ -376,10 +558,10 @@ export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ 
           <div className="text-xs space-y-1">
             <div className="flex items-center gap-2">
               <span className="font-bold text-white">Social Assistance Community Note</span>
-              <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-800">Verified by Blind Commuters</span>
+              <span className="text-[10px] text-amber-300 font-mono bg-amber-950/40 px-1.5 py-0.2 rounded border border-amber-800">Sample community note</span>
             </div>
             <p className="text-slate-300 text-[11px]">
-              "Elevator near Section B is undergoing maintenance today. A tactile guide route has been set up along Ramp 3 with high-visibility yellow markings."
+              "Example only: elevator status and accessible-route information must be confirmed with the venue before travel."
             </p>
           </div>
         </div>
