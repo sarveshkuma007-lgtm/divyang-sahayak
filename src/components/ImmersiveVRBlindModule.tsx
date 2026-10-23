@@ -1,0 +1,391 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Compass, 
+  Headphones, 
+  EyeOff, 
+  Volume2, 
+  Vibrate, 
+  MapPin, 
+  Play, 
+  Pause, 
+  RotateCcw, 
+  ArrowRight, 
+  Sparkles,
+  Users,
+  ShieldCheck,
+  Radio,
+  Footprints
+} from 'lucide-react';
+import { SensorySettings, VRVirtualWorld } from '../types';
+import { triggerHaptic, HAPTIC_PATTERNS } from '../services/haptics';
+import { playAmbientSoundscape, stopAmbientSoundscape, playTurnCue } from '../services/audioBeacon';
+import { speakText } from '../services/speechService';
+import { formatBionic } from '../services/localization';
+
+interface ImmersiveVRBlindModuleProps {
+  settings: SensorySettings;
+}
+
+const VR_WORLDS: VRVirtualWorld[] = [
+  {
+    id: 'delhi-airport-t3',
+    name: 'IGI Airport T3 Accessible Transit Route',
+    nameHindi: 'इंदिरा गांधी अंतरराष्ट्रीय हवाई अड्डा टर्मिनल 3',
+    category: 'transit',
+    soundscapeType: 'airport',
+    description: 'Travel through the world-class accessible terminal with continuous tactile guide paths, wide security gates, and silent acoustic lounges.',
+    steps: [
+      {
+        title: 'Terminal Entry & Tactile Threshold',
+        audioNarration: 'You are standing at Departure Gate 4. Smooth cool granite floor beneath your cane. Audible boarding bell chiming 30 degrees to your left. Straight ahead is the Divyang priority check-in kiosk.',
+        spatialSounds: ['Flight chime ding-dong', 'Footsteps on granite', 'Gentle AC airflow'],
+        tactileVibe: [100, 50, 100],
+        compassHeading: '15° North',
+      },
+      {
+        title: 'Priority Security Checkpoint',
+        audioNarration: 'Moving forward 20 paces. You feel ribbed tactile paving underfoot. Security staff voice warmly greets you on the right. Wide magnetic archway with soft confirmation chime.',
+        spatialSounds: ['Soft scanner hum', 'Security greeting', 'Luggage wheels rolling'],
+        tactileVibe: [80, 40, 80],
+        compassHeading: '350° North-Northwest',
+      },
+      {
+        title: 'Duty-Free Acoustic Corridor',
+        audioNarration: 'The space opens into a high-ceiling atrium. Soft carpet underfoot dampens all echoes. Aromas of cedar and roasted coffee. An electric buggie honks a gentle melody 10 meters behind.',
+        spatialSounds: ['Carpet footsteps', 'Gentle buggie horn', 'Quiet murmurs'],
+        tactileVibe: [120, 60, 120],
+        compassHeading: '90° East',
+      },
+      {
+        title: 'Boarding Gate 32 Accessible Jetbridge',
+        audioNarration: 'Arrival at Gate 32. Tactile blister stop tiles under your feet. Audio beacon announces: Boarding now commencing for priority passengers.',
+        spatialSounds: ['Boarding announcement', 'Jetbridge hum', 'Seatbelt click chime'],
+        tactileVibe: [200, 100, 200, 100, 300],
+        compassHeading: '45° Northeast',
+      },
+    ],
+  },
+  {
+    id: 'rajiv-chowk-metro',
+    name: 'Rajiv Chowk Metro Tactile Interchange Hub',
+    nameHindi: 'राजीव चौक मेट्रो स्टेशन इंटरचेंज',
+    category: 'transit',
+    soundscapeType: 'metro',
+    description: 'Immerse into the bustling underground metro interchange safely guided by dual tactile tracks and directional audio radar.',
+    steps: [
+      {
+        title: 'Concourse Level 1 Tactile Paving',
+        audioNarration: 'You step off the escalator. Tactile ribbed guidance pavers run straight. The deep rhythmic sub-bass hum of an arriving Yellow Line train vibrates softly under your soles.',
+        spatialSounds: ['Train arrival bass hum', 'Turnstile ticket beep', 'Commuter footsteps'],
+        tactileVibe: [150, 80, 150],
+        compassHeading: '180° South',
+      },
+      {
+        title: 'Blue Line Platform Transition',
+        audioNarration: 'Turn right at the tactile T-junction. Gentle descending wheelchair ramp. Acoustic station announcement: Train towards Noida Electronic City arriving on Platform 3.',
+        spatialSounds: ['Metro door closing chime', 'Station announcement echo', 'Wind draft'],
+        tactileVibe: [80, 40, 80, 40, 80],
+        compassHeading: '270° West',
+      },
+      {
+        title: 'Platform Screen Door Alignment',
+        audioNarration: 'Approaching Platform 3. Blister warning bumps signal you are 1 meter from the edge. Audio door locator emits alternating C-tones directly in front of you.',
+        spatialSounds: ['Platform door locator tone', 'Air brake release', 'Bell chime'],
+        tactileVibe: [300, 100, 300],
+        compassHeading: '270° West',
+      },
+    ],
+  },
+  {
+    id: 'lodi-sensory-garden',
+    name: 'Lodi Fragrance & Tactile Sensory Botanical Garden',
+    nameHindi: 'लोधी संवेदी वनस्पति उद्यान',
+    category: 'nature',
+    soundscapeType: 'garden',
+    description: 'A sensory haven for blind travelers with aromatic herbs, stone water fountains, and handrails embossed with Braille plant guides.',
+    steps: [
+      {
+        title: 'Fragrant Herb Pathway',
+        audioNarration: 'Crunch of natural limestone gravel underfoot. The soothing scent of lemongrass, lavender, and crushed mint. Warm afternoon sunlight on your face.',
+        spatialSounds: ['Gravel crunch', 'Gentle birdsong', 'Rustling leaves'],
+        tactileVibe: [60, 40, 60],
+        compassHeading: '120° Southeast',
+      },
+      {
+        title: 'Acoustic Water Fountain Pavilion',
+        audioNarration: 'Follow the gentle trickling sound of water straight ahead for 15 steps. Carved sandstone railing with embossed Braille describing the 400-year-old banyan tree.',
+        spatialSounds: ['Water fountain cascade', 'Wind chime', 'Breeze'],
+        tactileVibe: [100, 50, 100],
+        compassHeading: '90° East',
+      },
+    ],
+  },
+];
+
+export const ImmersiveVRBlindModule: React.FC<ImmersiveVRBlindModuleProps> = ({ settings }) => {
+  const [selectedWorld, setSelectedWorld] = useState<VRVirtualWorld>(VR_WORLDS[0]);
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [eyesClosedMode, setEyesClosedMode] = useState(false);
+  const [compassDegrees, setCompassDegrees] = useState(15);
+
+  const currentStep = selectedWorld.steps[activeStepIndex];
+
+  // Start / Pause Sensory Journey
+  const togglePlay = () => {
+    if (isPlaying) {
+      stopAmbientSoundscape();
+      setIsPlaying(false);
+      window.speechSynthesis?.cancel();
+    } else {
+      setIsPlaying(true);
+      playAmbientSoundscape(selectedWorld.soundscapeType);
+      triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
+      speakText(
+        `Starting sensory journey in ${selectedWorld.name}. Step 1: ${currentStep.title}. ${currentStep.audioNarration}`,
+        settings.uiLanguage,
+        settings.voiceSpeed
+      );
+    }
+  };
+
+  const advanceStep = (nextIdx: number) => {
+    if (nextIdx >= selectedWorld.steps.length) return;
+    setActiveStepIndex(nextIdx);
+    const step = selectedWorld.steps[nextIdx];
+
+    // Trigger step tactile pulse
+    if (settings.hapticFeedback && step.tactileVibe) {
+      triggerHaptic(step.tactileVibe);
+    }
+
+    // Step turn cue
+    playTurnCue('straight');
+
+    // Narrate spatial step
+    speakText(`${step.title}. ${step.audioNarration}`, settings.uiLanguage, settings.voiceSpeed);
+  };
+
+  useEffect(() => {
+    return () => {
+      stopAmbientSoundscape();
+    };
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      
+      {/* Top Sensory VR Banner */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-800/50 border border-slate-700">
+        <div>
+          <div className="flex items-center gap-2">
+            <Headphones className="w-5 h-5 text-cyan-400" />
+            <h2 className="text-base sm:text-lg font-bold text-white">
+              Immersive Blind VR Audio & Sensory World
+            </h2>
+          </div>
+          <p className="text-xs text-slate-300 mt-0.5">
+            "Close your eyes and travel anywhere" — Real-time AI spatial audio orientation, acoustic soundscapes, and tactile haptic footsteps.
+          </p>
+        </div>
+
+        {/* Eyes Closed Ultra-Focus Mode */}
+        <button
+          onClick={() => {
+            triggerHaptic(HAPTIC_PATTERNS.CLICK);
+            setEyesClosedMode(!eyesClosedMode);
+          }}
+          className={`flex items-center gap-2 px-3 py-2 text-xs font-bold rounded-xl border transition-all ${
+            eyesClosedMode
+              ? 'bg-amber-500 text-slate-950 border-amber-400'
+              : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600'
+          }`}
+          aria-label="Toggle close eyes focus mode"
+        >
+          <EyeOff className="w-4 h-4" />
+          <span>{eyesClosedMode ? 'Exit Eyes-Closed Mode' : 'Eyes-Closed Sensory Mode'}</span>
+        </button>
+      </div>
+
+      {/* Eyes Closed Blackout Overlay if active */}
+      {eyesClosedMode && (
+        <div className="p-6 rounded-2xl bg-black border-2 border-yellow-400/80 text-yellow-300 text-center space-y-4 animate-in fade-in">
+          <EyeOff className="w-10 h-10 mx-auto text-yellow-400 animate-pulse" />
+          <h3 className="text-lg font-bold">Eyes Closed Sensory Mode Active</h3>
+          <p className="text-sm max-w-lg mx-auto text-yellow-200/90 leading-relaxed">
+            Screen visual strain is zero. Put on your headphones or hearing aids, relax, and navigate using 3D spatial soundscapes, tactile cane vibrations, and AI voice orientation prompts.
+          </p>
+          <div className="flex justify-center gap-3 pt-2">
+            <button
+              onClick={() => {
+                triggerHaptic([60, 40, 60]);
+                advanceStep((activeStepIndex + 1) % selectedWorld.steps.length);
+              }}
+              className="px-6 py-3 rounded-xl bg-yellow-400 text-black font-bold text-sm hover:bg-yellow-300 shadow-lg"
+            >
+              Take Next Sensory Step (Footstep Pulse)
+            </button>
+            <button
+              onClick={() => setEyesClosedMode(false)}
+              className="px-4 py-3 rounded-xl bg-slate-900 border border-yellow-500 text-yellow-300 text-xs font-semibold"
+            >
+              Resume Visual Display
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* World Selection Carousel */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {VR_WORLDS.map((world) => (
+          <button
+            key={world.id}
+            onClick={() => {
+              triggerHaptic(HAPTIC_PATTERNS.CLICK);
+              setSelectedWorld(world);
+              setActiveStepIndex(0);
+              if (isPlaying) {
+                playAmbientSoundscape(world.soundscapeType);
+              }
+            }}
+            className={`p-4 rounded-xl border text-left transition-all ${
+              selectedWorld.id === world.id
+                ? 'border-cyan-400 bg-cyan-950/40 ring-1 ring-cyan-400'
+                : 'border-slate-800 bg-slate-800/40 hover:border-slate-700'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs text-cyan-400 font-mono mb-1">
+              <span className="uppercase">{world.category}</span>
+              <span>{world.steps.length} Sensory Zones</span>
+            </div>
+            <h3 className="text-xs sm:text-sm font-bold text-white line-clamp-1">{world.name}</h3>
+            <p className="text-[11px] text-slate-400 line-clamp-2 mt-1">{world.description}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Main Sensory Journey Stage */}
+      <div className="p-5 sm:p-6 rounded-2xl bg-slate-900 border border-slate-700 space-y-6">
+        
+        {/* Header with Compass Heading and Control */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span className="text-xs font-mono text-cyan-300 uppercase tracking-wider">
+                Virtual Journey: {selectedWorld.name}
+              </span>
+            </div>
+            <h3 className="text-base sm:text-lg font-bold text-white mt-1">
+              Zone {activeStepIndex + 1}: {currentStep.title}
+            </h3>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Play / Pause Virtual Walk */}
+            <button
+              onClick={togglePlay}
+              className={`flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl transition-all ${
+                isPlaying
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                  : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+              }`}
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-slate-950" />}
+              <span>{isPlaying ? 'Pause Journey' : 'Start Sensory Walk'}</span>
+            </button>
+
+            {/* Compass Heading Indicator */}
+            <div className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs font-mono text-cyan-300">
+              <Compass className="w-4 h-4 text-cyan-400" />
+              <span>{currentStep.compassHeading}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Narrative Description & Bionic Text */}
+        <div className="p-4 rounded-xl bg-slate-800/60 border border-slate-700 space-y-3">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <Volume2 className="w-3.5 h-3.5 text-cyan-400" />
+              Binaural Spatial Audio Narration
+            </span>
+            <span className="font-mono">Step {activeStepIndex + 1} of {selectedWorld.steps.length}</span>
+          </div>
+
+          <p 
+            className="text-sm sm:text-base text-slate-100 font-medium leading-relaxed"
+            dangerouslySetInnerHTML={{ __html: formatBionic(currentStep.audioNarration, settings.bionicReading) }}
+          />
+
+          {/* Spatial Sound Elements Heard */}
+          <div className="pt-2 border-t border-slate-700/60 flex flex-wrap gap-2 text-xs">
+            <span className="text-slate-400 self-center text-[11px]">Acoustic cues in space:</span>
+            {currentStep.spatialSounds.map((sound, sIdx) => (
+              <span key={sIdx} className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700 text-cyan-300 text-[11px] font-mono">
+                ♫ {sound}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Tactile Footstep Simulation Buttons */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (currentStep.tactileVibe) triggerHaptic(currentStep.tactileVibe);
+              }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-amber-300 font-semibold border border-slate-700"
+            >
+              <Vibrate className="w-4 h-4" />
+              <span>Feel Ground Texture Vibration</span>
+            </button>
+            <button
+              onClick={() => speakText(currentStep.audioNarration, settings.uiLanguage, settings.voiceSpeed)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-cyan-300 font-semibold border border-slate-700"
+            >
+              <Volume2 className="w-4 h-4" />
+              <span>Repeat Audio Narration</span>
+            </button>
+          </div>
+
+          {/* Next Sensory Step Navigation */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => advanceStep(activeStepIndex - 1)}
+              disabled={activeStepIndex === 0}
+              className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-800 disabled:opacity-40 text-slate-300 border border-slate-700"
+            >
+              Previous Zone
+            </button>
+            <button
+              onClick={() => advanceStep(activeStepIndex + 1)}
+              disabled={activeStepIndex === selectedWorld.steps.length - 1}
+              className="flex-1 sm:flex-none px-4 py-2 text-xs font-bold rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 flex items-center justify-center gap-1.5"
+            >
+              <span>Step Forward in VR</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Social Assistance & Community Terrain Shared Beacon */}
+        <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-start gap-3">
+          <Users className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="text-xs space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-white">Social Assistance Community Note</span>
+              <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 px-1.5 py-0.2 rounded border border-emerald-800">Verified by Blind Commuters</span>
+            </div>
+            <p className="text-slate-300 text-[11px]">
+              "Elevator near Section B is undergoing maintenance today. A tactile guide route has been set up along Ramp 3 with high-visibility yellow markings."
+            </p>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  );
+};

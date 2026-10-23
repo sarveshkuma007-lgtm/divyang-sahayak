@@ -1,0 +1,10 @@
+{
+  "name": "Divyang Sahayak - Accessible Sensory Platform",
+  "description": "An all-in-one assistive ecosystem for deaf, mute, blind, and deaf-blind individuals featuring voice command navigation, AR obstacle & currency detection, sign language translation, WebRTC calling with live subtitles, tactile haptics, document OCR privacy protection, and adaptive sensory modes.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
