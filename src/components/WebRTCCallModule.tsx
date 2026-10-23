@@ -22,6 +22,7 @@ import { SensorySettings } from '../types';
 import { getTranslation } from '../services/localization';
 import { triggerHaptic, HAPTIC_PATTERNS } from '../services/haptics';
 import { speakText } from '../services/speechService';
+import { useHandGestureRecognition } from '../services/handGestureRecognition';
 
 interface WebRTCCallModuleProps {
   settings: SensorySettings;
@@ -54,8 +55,30 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const speechRecRef = useRef<any>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const makingOfferRef = useRef(false);
+  const ignoreOfferRef = useRef(false);
+
+  const { result: handResult, status: handStatus } = useHandGestureRecognition(localVideoRef, inCall);
 
   const t = (key: string) => getTranslation(settings.uiLanguage, key);
+
+  useEffect(() => {
+    if (inCall && localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+      void localVideoRef.current.play().catch((error) => {
+        console.warn('Local video playback needs user interaction:', error);
+      });
+    }
+  }, [inCall]);
+
+  useEffect(() => () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    if (speechRecRef.current) {
+      try { speechRecRef.current.stop(); } catch { /* already stopped */ }
+    }
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    peerConnectionRef.current?.close();
+  }, []);
 
   // Initialize and start real call
   const startRealCall = async () => {
@@ -67,11 +90,8 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
         audio: true,
       });
       localStreamRef.current = stream;
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play();
-      }
+      // Render the video elements before attaching the stream to the local video.
+      setInCall(true);
 
       // 2. Setup WebRTC PeerConnection
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -84,14 +104,37 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
       pc.ontrack = (event) => {
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
-          remoteVideoRef.current.play();
+          void remoteVideoRef.current.play().catch((error) => {
+            console.warn('Remote video playback needs user interaction:', error);
+          });
         }
       };
 
-      // Handle ICE Candidates to send to signaling server
+      // Handle ICE candidates and send them through the signaling endpoint.
       pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendSignalMessage('candidate', event.candidate);
+        if (event.candidate) void sendSignalMessage('candidate', event.candidate);
+      };
+
+      // Perfect-negotiation pattern: both peers may join at the same time safely.
+      pc.onnegotiationneeded = async () => {
+        try {
+          makingOfferRef.current = true;
+          await pc.setLocalDescription();
+          if (pc.localDescription) {
+            await sendSignalMessage('offer', pc.localDescription);
+          }
+        } catch (error) {
+          console.error('Could not create WebRTC offer:', error);
+        } finally {
+          makingOfferRef.current = false;
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+          setCurrentSpeechSubtitle('Connection failed. This network may require a TURN server.');
+        } else if (pc.connectionState === 'connected') {
+          setCurrentSpeechSubtitle('Video call connected. Speak to generate local subtitles.');
         }
       };
 
@@ -102,18 +145,12 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
         body: JSON.stringify({ roomId, peerId }),
       });
 
-      // Create offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await sendSignalMessage('offer', offer);
-
-      // Start polling signaling server for incoming peer answer / candidates
+      // Start polling before negotiation messages arrive. onnegotiationneeded creates the offer.
       startSignalingPoll();
 
       // Start Live Speech-to-Subtitles recognition
       startLiveCaptioning();
 
-      setInCall(true);
       triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
       speakText('Real WebRTC video call connected with live subtitles and gesture recognition.', settings.uiLanguage, settings.voiceSpeed);
     } catch (err) {
@@ -167,11 +204,19 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
           if (!pc) continue;
 
           if (msg.type === 'offer') {
-            if (pc.signalingState !== 'stable') {
-              console.warn('Ignoring offer because the connection is not stable.');
+            const offerCollision = makingOfferRef.current ||
+              (pc.signalingState !== 'stable' && pc.signalingState !== 'have-remote-offer');
+            // Deterministic polite peer: the lexicographically greater peer ID accepts collisions.
+            const polite = peerId.localeCompare(msg.from) > 0;
+            ignoreOfferRef.current = !polite && offerCollision;
+            if (ignoreOfferRef.current) {
+              console.warn('Ignoring colliding offer on the impolite peer.');
               continue;
             }
 
+            if (offerCollision && polite) {
+              await pc.setLocalDescription({ type: 'rollback' });
+            }
             await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
             for (const candidate of pendingCandidatesRef.current) {
               try {
@@ -198,6 +243,7 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
               pendingCandidatesRef.current = [];
             }
           } else if (msg.type === 'candidate') {
+            if (ignoreOfferRef.current) continue;
             if (!pc.remoteDescription) {
               pendingCandidatesRef.current.push(msg.payload);
               continue;
@@ -393,11 +439,13 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
                   )}
                 </div>
 
-                {/* Hand Sign Bounding Box Simulation */}
-                <div className="self-center w-36 h-36 rounded-2xl border-2 border-dashed border-cyan-400/70 flex items-center justify-center">
-                  <span className="text-[10px] font-mono text-cyan-300 bg-slate-950/80 px-2 py-0.5 rounded">
-                    SIGN RECOGNITION NOT ENABLED
-                  </span>
+                {/* Live MediaPipe hand landmark overlay and gesture label */}
+                <div className="self-center w-44 min-h-20 rounded-2xl border border-dashed border-cyan-400/70 flex items-center justify-center p-2">
+                  <div className="text-center bg-slate-950/80 rounded-lg px-3 py-2">
+                    <span className="text-[10px] font-mono text-cyan-300 block">LIVE HAND TRACKING</span>
+                    <span className="text-sm font-bold text-white block mt-1">{handResult ? handResult.label : handStatus}</span>
+                    {handResult && <span className="text-[10px] text-emerald-300">Confidence estimate: {Math.round(handResult.confidence * 100)}%</span>}
+                  </div>
                 </div>
 
                 <div className="text-[10px] text-slate-400 font-mono bg-slate-950/80 px-2 py-0.5 rounded self-start">
