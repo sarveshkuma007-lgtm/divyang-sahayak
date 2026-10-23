@@ -587,6 +587,101 @@ Respond strictly with JSON:
 
 // Gemini Sign Language Translation & Synthesis
 
+app.post('/api/gemini/recognize-sign-sequence', async (req: Request, res: Response) => {
+  try {
+    const { frames, language = 'English' } = req.body as {
+      frames?: string[];
+      language?: string;
+    };
+
+    if (
+      !Array.isArray(frames) ||
+      frames.length < 2 ||
+      frames.length > 12 ||
+      frames.some(
+        (frame) =>
+          typeof frame !== 'string' ||
+          !/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(frame)
+      )
+    ) {
+      res.status(400).json({
+        error: 'Provide 2–12 valid image frames.',
+      });
+      return;
+    }
+
+    const parts: Array<{
+  inlineData?: { mimeType: string; data: string };
+  text?: string;
+}> = frames.map((frame) => {
+      const match = frame.match(
+        /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i
+      );
+
+      if (!match) {
+        throw new Error('Invalid image frame.');
+      }
+
+      const mimeType = match[1].toLowerCase().replace('jpg', 'jpeg');
+
+      return {
+        inlineData: {
+          mimeType,
+          data: match[2],
+        },
+      };
+    });
+
+    parts.push({
+      text: `Analyze these frames in chronological order for possible Indian Sign Language (ISL) signing. Respond in ${language}. Do not treat an open palm alone as a specific word. If the sign is unclear, return an empty recognizedText and uncertain=true. Return JSON only with recognizedText (string), gloss (string array), confidence (0 to 1), observations (string), and uncertain (boolean). This is best-effort interpretation, not guaranteed ISL recognition.`,
+    });
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: { parts },
+      config: {
+        responseMimeType: 'application/json',
+        temperature: 0.1,
+      },
+    });
+
+    let result: any;
+
+    try {
+      result = JSON.parse(response.text || '{}');
+    } catch {
+      res.status(502).json({
+        error: 'The model returned invalid JSON.',
+      });
+      return;
+    }
+
+    res.json({
+      recognizedText:
+        typeof result.recognizedText === 'string'
+          ? result.recognizedText
+          : '',
+      gloss: Array.isArray(result.gloss) ? result.gloss : [],
+      confidence:
+        typeof result.confidence === 'number'
+          ? Math.max(0, Math.min(1, result.confidence))
+          : 0,
+      observations:
+        typeof result.observations === 'string'
+          ? result.observations
+          : '',
+      uncertain: result.uncertain !== false,
+    });
+  } catch (error: any) {
+    console.error('ISL sequence analysis failed:', error);
+    res.status(500).json({
+      error: 'Failed to analyze signing sequence.',
+      details: error?.message || 'Unknown server error',
+    });
+  }
+});
+
+
 app.post('/api/gemini/sign-translate', async (req: Request, res: Response) => {
 
   try {
