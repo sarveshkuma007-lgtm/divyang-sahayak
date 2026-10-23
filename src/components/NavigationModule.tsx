@@ -124,6 +124,9 @@ const SAMPLE_ROUTES: NavigationRoute[] = [
   },
 ];
 
+type DetectionBox = { x: number; y: number; width: number; height: number };
+type DetectedObstacle = ObstacleItem & { boundingBox?: DetectionBox | null };
+
 const NavigationModule: React.FC<NavigationModuleProps> = ({
   settings,
 }) => {
@@ -134,20 +137,11 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
   const [isNavigating, setIsNavigating] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
 
-  const [obstacles, setObstacles] = useState<ObstacleItem[]>([
-    {
-      label: 'Staircase 4 steps down',
-      position: 'center',
-      distanceMeters: 1.8,
-      urgency: 'medium',
-    },
-    {
-      label: 'Low barrier post',
-      position: 'left',
-      distanceMeters: 2.5,
-      urgency: 'low',
-    },
-  ]);
+  const [obstacles, setObstacles] = useState<DetectedObstacle[]>([]);
+  const [cameraStatus, setCameraStatus] = useState('Camera is off.');
+  const [scanError, setScanError] = useState('');
+  const [hasAnalyzedFrame, setHasAnalyzedFrame] = useState(false);
+  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
 
   const [analyzingScene, setAnalyzingScene] = useState(false);
   const [transitModalOpen, setTransitModalOpen] = useState(false);
@@ -162,9 +156,32 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scanInFlightRef = useRef(false);
+  const scanHandlerRef = useRef<((automatic?: boolean) => Promise<void>) | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const lastSpokenAlertRef = useRef('');
+  const lastSpokenAtRef = useRef(0);
 
   const t = (key: string) =>
     getTranslation(settings.uiLanguage, key);
+
+  // Attach the stream only after React has mounted the conditional video element.
+  useEffect(() => {
+    if (!cameraActive || !videoRef.current || !streamRef.current) return;
+
+    const video = videoRef.current;
+    video.srcObject = streamRef.current;
+
+    video.play()
+      .then(() => {
+        setCameraStatus('Camera connected. Ready to analyze.');
+      })
+      .catch((error) => {
+        console.error('Video playback failed:', error);
+        setScanError('Camera connected, but video could not start. Check browser permissions or upload an image instead.');
+        setCameraStatus('Video could not start.');
+      });
+  }, [cameraActive]);
 
   useEffect(() => {
     return () => {
@@ -176,7 +193,9 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
     if (cameraActive) {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
-
+      setObstacles([]);
+      setScanError('');
+      setCameraStatus('Camera is off.');
       setCameraActive(false);
       triggerHaptic(HAPTIC_PATTERNS.CLICK);
       return;
@@ -197,12 +216,8 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
       });
 
       streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-
+      setScanError('');
+      setCameraStatus('Connecting camera…');
       setCameraActive(true);
       triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
 
@@ -213,6 +228,10 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
       );
     } catch (error) {
       console.error('Camera access failed:', error);
+      setScanError(
+        `${error instanceof Error ? error.message : 'Camera access failed.'} You can connect a phone as a webcam or upload an image instead.`,
+      );
+      setCameraStatus('Camera unavailable.');
       setCameraActive(false);
 
       speakText(
@@ -223,7 +242,8 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
     }
   };
 
-  const handleScanObstaclesWithAI = async () => {
+  const handleScanObstaclesWithAI = async (automatic = false) => {
+    if (scanInFlightRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
@@ -241,8 +261,9 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
       return;
     }
 
+    scanInFlightRef.current = true;
     setAnalyzingScene(true);
-    triggerHaptic(HAPTIC_PATTERNS.CLICK);
+    if (!automatic) triggerHaptic(HAPTIC_PATTERNS.CLICK);
 
     try {
       const context = canvas.getContext('2d');
@@ -264,36 +285,121 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
         settings.uiLanguage === 'hi' ? 'Hindi' : 'English',
       );
 
-      if (result.obstacles?.length) {
-        setObstacles(result.obstacles);
+      setObstacles(Array.isArray(result.obstacles) ? result.obstacles : []);
+      setHasAnalyzedFrame(true);
+      setScanError('');
+      setCameraStatus(
+        result.obstacles?.length
+          ? `Analysis complete: ${result.obstacles.length} possible obstacle(s).`
+          : 'Analysis complete: no obstacles identified in this frame.',
+      );
+
+      // Speak new/changed hazards during auto-scan, but suppress repeated alerts.
+      const important = (result.obstacles || []).filter((item: DetectedObstacle) => item.urgency === 'critical' || item.urgency === 'medium');
+      const alertSignature = important.map((item: DetectedObstacle) => `${item.label}:${item.position}:${item.urgency}`).sort().join('|');
+      const now = Date.now();
+      if (result.spokenGuidance && ((!automatic) || (alertSignature && (alertSignature !== lastSpokenAlertRef.current || now - lastSpokenAtRef.current > 12000)))) {
+        speakText(result.spokenGuidance, settings.uiLanguage, settings.voiceSpeed);
+        lastSpokenAlertRef.current = alertSignature;
+        lastSpokenAtRef.current = now;
       }
 
-      if (result.spokenGuidance) {
-        speakText(
-          result.spokenGuidance,
-          settings.uiLanguage,
-          settings.voiceSpeed,
-        );
-      }
-
-      if (result.hapticCode === 'STOP_DANGER') {
+      if (result.hapticCode === 'STOP_DANGER' && (!automatic || important.length > 0)) {
         triggerHaptic(HAPTIC_PATTERNS.OBSTACLE_DANGER);
         playObstacleBeacon(0.8, 'center');
-      } else if (result.hapticCode === 'LEFT') {
+      } else if (!automatic && result.hapticCode === 'LEFT') {
         triggerHaptic(HAPTIC_PATTERNS.TURN_LEFT);
         playTurnCue('left');
-      } else if (result.hapticCode === 'RIGHT') {
+      } else if (!automatic && result.hapticCode === 'RIGHT') {
         triggerHaptic(HAPTIC_PATTERNS.TURN_RIGHT);
         playTurnCue('right');
       }
     } catch (error) {
       console.error('Obstacle scan failed:', error);
-
-      speakText(
-        'Obstacle analysis failed. Please try again.',
-        settings.uiLanguage,
-        settings.voiceSpeed,
+      setScanError(
+        error instanceof Error
+          ? error.message
+          : 'Obstacle analysis failed. Check the server and Gemini API key, then try again.',
       );
+      setCameraStatus('Analysis failed.');
+
+      if (!automatic) {
+        speakText(
+          'Obstacle analysis failed. Please try again.',
+          settings.uiLanguage,
+          settings.voiceSpeed,
+        );
+      }
+    } finally {
+      scanInFlightRef.current = false;
+      setAnalyzingScene(false);
+    }
+  };
+
+  scanHandlerRef.current = handleScanObstaclesWithAI;
+
+  // Automatically analyze fresh camera frames. Requests never overlap.
+  useEffect(() => {
+    if (!cameraActive) return;
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (video && video.readyState >= 2 && !scanInFlightRef.current) {
+        void scanHandlerRef.current?.(true);
+      }
+    }, 2400);
+    return () => window.clearInterval(timer);
+  }, [cameraActive]);
+
+  const handleImageUpload = async (file?: File) => {
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setScanError('Choose an image file such as JPG, PNG, or WEBP.');
+      return;
+    }
+
+    try {
+      setAnalyzingScene(true);
+      setScanError('');
+      setCameraStatus('Analyzing uploaded image…');
+
+      const reader = new FileReader();
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        reader.onload = () => {
+          if (typeof reader.result === 'string') resolve(reader.result);
+          else reject(new Error('Could not read image file.'));
+        };
+        reader.onerror = () => reject(new Error('Could not read image file.'));
+        reader.readAsDataURL(file);
+      });
+
+      setUploadedImage(dataUrl);
+
+      const result = await analyzeSceneVision(
+        dataUrl,
+        'navigation',
+        settings.uiLanguage === 'hi' ? 'Hindi' : 'English',
+      );
+
+      setObstacles(Array.isArray(result.obstacles) ? result.obstacles : []);
+      setHasAnalyzedFrame(true);
+      setCameraStatus(
+        result.obstacles?.length
+          ? `Image analysis complete: ${result.obstacles.length} possible obstacle(s).`
+          : 'Image analysis complete: no obstacles identified.',
+      );
+
+      if (result.spokenGuidance) {
+        speakText(result.spokenGuidance, settings.uiLanguage, settings.voiceSpeed);
+      }
+    } catch (error) {
+      console.error('Uploaded image analysis failed:', error);
+      setScanError(
+        error instanceof Error
+          ? error.message
+          : 'Image analysis failed. Check the server and Gemini API key.',
+      );
+      setCameraStatus('Image analysis failed.');
     } finally {
       setAnalyzingScene(false);
     }
@@ -611,6 +717,22 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
 
                   <canvas ref={canvasRef} className="hidden" />
 
+                  <div className="absolute inset-0 pointer-events-none">
+                    {obstacles.map((obstacle, index) => obstacle.boundingBox ? (
+                      <div
+                        key={`box-${obstacle.label}-${index}`}
+                        className={`absolute border-2 ${obstacle.urgency === 'critical' ? 'border-red-400' : obstacle.urgency === 'medium' ? 'border-amber-300' : 'border-cyan-300'}`}
+                        style={{
+                          left: `${Math.max(0, Math.min(100, obstacle.boundingBox.x / 10))}%`,
+                          top: `${Math.max(0, Math.min(100, obstacle.boundingBox.y / 10))}%`,
+                          width: `${Math.max(1, Math.min(100 - obstacle.boundingBox.x / 10, obstacle.boundingBox.width / 10))}%`,
+                          height: `${Math.max(1, Math.min(100 - obstacle.boundingBox.y / 10, obstacle.boundingBox.height / 10))}%`,
+                        }}
+                      >
+                        <span className="absolute -top-5 left-0 max-w-40 truncate rounded bg-slate-950/90 px-1 py-0.5 text-[9px] font-bold text-white">{obstacle.label}</span>
+                      </div>
+                    ) : null)}
+                  </div>
                   <div className="absolute inset-0 pointer-events-none p-3 flex flex-col justify-between">
                     <div className="flex flex-col gap-1.5">
                       {obstacles.map((obstacle, index) => (
@@ -631,6 +753,11 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
                           </span>
                         </div>
                       ))}
+                      {obstacles.length === 0 && (
+                        <div className="self-start px-2 py-1 rounded-md text-[11px] bg-slate-950/80 border border-slate-600 text-white">
+                          {hasAnalyzedFrame ? 'No obstacles identified in the latest scan' : 'Waiting for first camera scan…'}
+                        </div>
+                      )}
                     </div>
 
                     <div className="self-center flex flex-col items-center">
@@ -643,6 +770,12 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
                     </div>
                   </div>
                 </>
+              ) : uploadedImage ? (
+                <img
+                  src={uploadedImage}
+                  alt="Selected image for obstacle analysis"
+                  className="w-full h-full object-contain"
+                />
               ) : (
                 <div className="p-6 text-center space-y-2">
                   <Camera className="w-8 h-8 text-slate-600 mx-auto" />
@@ -660,17 +793,49 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
               )}
             </div>
 
+            <p className="text-xs text-slate-300" role="status">
+              {cameraStatus}
+            </p>
+            {scanError && (
+              <p
+                className="text-xs text-red-300 bg-red-950/40 border border-red-800/60 rounded-lg p-2"
+                role="alert"
+              >
+                {scanError}
+              </p>
+            )}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(event) => {
+                void handleImageUpload(event.target.files?.[0]);
+                event.currentTarget.value = '';
+              }}
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={handleScanObstaclesWithAI}
+              onClick={() => void handleScanObstaclesWithAI(false)}
               disabled={!cameraActive || analyzingScene}
               className="w-full py-2 px-3 text-xs font-bold rounded-xl bg-slate-700 hover:bg-slate-600 text-white disabled:opacity-50 flex items-center justify-center gap-2 border border-slate-600"
             >
               <Camera className="w-3.5 h-3.5 text-cyan-400" />
               {analyzingScene
                 ? 'Analyzing camera frame...'
-                : 'Analyze Camera Frame'}
+                : cameraActive ? 'Scan Now (auto-scan on)' : 'Activate camera to scan'}
             </button>
+            <button
+              type="button"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={analyzingScene}
+              className="w-full py-2 px-3 text-xs font-bold rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white disabled:opacity-50 border border-cyan-600"
+            >
+              Upload / Take Photo
+            </button>
+            </div>
 
             <p className="text-[11px] leading-relaxed text-slate-400">
               AI results may be inaccurate. Do not rely on this feature alone
