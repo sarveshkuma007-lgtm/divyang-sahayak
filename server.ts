@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+﻿import express, { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -127,7 +127,7 @@ Output JSON format with keys:
     const prompt = `User said: "${message}". User language detected on device: "${detectedLanguage || 'auto'}". Current screen context: "${context || 'dashboard'}". Provide JSON response.`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: prompt,
       config: {
         systemInstruction,
@@ -179,7 +179,7 @@ You are the real-time Vision & Obstacle Guidance Engine for visually impaired an
 Analyze the provided camera frame thoroughly.
 Modes:
 1. "navigation": Detect walking surface, physical obstacles (stairs, curbs, poles, vehicles, puddles, walls, doorways, people), their position (Left, Center, Right), approximate distance in meters (e.g., 0.8m, 1.5m, 3m), and safety advice.
-2. "currency": Detect any banknotes or coins visible (Indian Rupees ₹10, ₹20, ₹50, ₹100, ₹200, ₹500, or foreign currencies like USD $1, $5, $10, $20, $50, $100). Identify denomination clearly.
+2. "currency": Detect any banknotes or coins visible (Indian Rupees â‚¹10, â‚¹20, â‚¹50, â‚¹100, â‚¹200, â‚¹500, or foreign currencies like USD $1, $5, $10, $20, $50, $100). Identify denomination clearly.
 3. "all": Both obstacle and currency analysis.
 
 Language requirement: Provide concise, clear spoken prompt text in "${preferredLanguage || 'English'}" (if Hindi is requested, provide clear Hindi).
@@ -188,7 +188,7 @@ Return JSON only:
 {
   "detectedCurrency": {
     "found": boolean,
-    "denomination": string, // e.g. "₹500 (Five Hundred Rupees)"
+    "denomination": string, // e.g. "â‚¹500 (Five Hundred Rupees)"
     "confidence": number, // 0 to 1
     "noteCondition": string
   },
@@ -207,7 +207,7 @@ Return JSON only:
 `.trim();
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: {
         parts: [
           {
@@ -289,7 +289,7 @@ Respond strictly with JSON:
 `.trim();
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: {
         parts: [
           {
@@ -367,7 +367,7 @@ Respond in JSON:
 `.trim();
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: `Translate this phrase to sign language structure: "${text}". Target: ${targetDialect || 'ISL/ASL universal'}. Output JSON.`,
       config: {
         systemInstruction,
@@ -424,3 +424,4 @@ async function startServer() {
 }
 
 startServer();
+
