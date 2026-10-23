@@ -41,10 +41,10 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
   const [copiedLink, setCopiedLink] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [videoDisabled, setVideoDisabled] = useState(false);
-  const [detectedGestureInCall, setDetectedGestureInCall] = useState<string | null>('GREETING / HELLO');
+  const [detectedGestureInCall, setDetectedGestureInCall] = useState<string | null>(null);
   const [subtitlesStream, setSubtitlesStream] = useState<string[]>([]);
   const [currentSpeechSubtitle, setCurrentSpeechSubtitle] = useState<string>(
-    'Caller: "Hello, I can see your sign language clearly. How can I help you today?"'
+    'Subtitles will appear here when speech is detected.'
   );
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -53,6 +53,7 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const speechRecRef = useRef<any>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 
   const t = (key: string) => getTranslation(settings.uiLanguage, key);
 
@@ -116,9 +117,20 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
       triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
       speakText('Real WebRTC video call connected with live subtitles and gesture recognition.', settings.uiLanguage, settings.voiceSpeed);
     } catch (err) {
-      console.warn('Call setup error or camera denied, entering preview mode', err);
-      setInCall(true);
-      startLiveCaptioning();
+      console.error('Call setup failed. Check camera/microphone permissions and server availability.', err);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
+      }
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+      setInCall(false);
+      setCurrentSpeechSubtitle(
+        'Call could not start. Allow camera/microphone access and check that the server is running.'
+      );
     }
   };
 
@@ -136,33 +148,71 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
 
   const startSignalingPoll = () => {
     let lastTimestamp = 0;
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+
     pollIntervalRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/webrtc/poll?roomId=${encodeURIComponent(roomId)}&peerId=${encodeURIComponent(peerId)}&since=${lastTimestamp}`);
+        const res = await fetch(
+          `/api/webrtc/poll?roomId=${encodeURIComponent(roomId)}&peerId=${encodeURIComponent(peerId)}&since=${lastTimestamp}`
+        );
         if (!res.ok) return;
-        const data = await res.json();
-        if (data.timestamp) lastTimestamp = data.timestamp;
 
-        const messages = data.messages || [];
-        for (const msg of messages) {
+        const data = await res.json();
+        if (typeof data.timestamp === 'number') {
+          lastTimestamp = Math.max(lastTimestamp, data.timestamp);
+        }
+
+        for (const msg of data.messages || []) {
           const pc = peerConnectionRef.current;
           if (!pc) continue;
 
-          if (msg.type === 'offer' && pc.signalingState !== 'stable') {
+          if (msg.type === 'offer') {
+            if (pc.signalingState !== 'stable') {
+              console.warn('Ignoring offer because the connection is not stable.');
+              continue;
+            }
+
             await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+            for (const candidate of pendingCandidatesRef.current) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch (error) {
+                console.warn('Queued ICE candidate could not be added:', error);
+              }
+            }
+            pendingCandidatesRef.current = [];
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            await sendSignalMessage('answer', answer);
+            await sendSignalMessage('answer', pc.localDescription);
           } else if (msg.type === 'answer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+            if (pc.signalingState === 'have-local-offer') {
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+              for (const candidate of pendingCandidatesRef.current) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (error) {
+                  console.warn('Queued ICE candidate could not be added:', error);
+                }
+              }
+              pendingCandidatesRef.current = [];
+            }
           } else if (msg.type === 'candidate') {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+            if (!pc.remoteDescription) {
+              pendingCandidatesRef.current.push(msg.payload);
+              continue;
+            }
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+            } catch (error) {
+              console.warn('ICE candidate could not be added:', error);
+            }
           }
         }
       } catch (err) {
-        // Signaling poll silent fail
+        console.warn('Signaling poll failed; will retry.', err);
       }
-    }, 1500);
+    }, 1000);
   };
 
   const startLiveCaptioning = () => {
@@ -198,6 +248,7 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
 
   const endCall = () => {
     triggerHaptic(HAPTIC_PATTERNS.CLICK);
+    pendingCandidatesRef.current = [];
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     if (speechRecRef.current) {
       try {
@@ -245,17 +296,6 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
     window.open(url, '_blank');
   };
 
-  // Simulate in-call hand gesture detection cycling
-  useEffect(() => {
-    if (!inCall) return;
-    const gestures = ['GREETING / HELLO', 'THANK YOU', 'I AGREE / YES', 'PLEASE WAIT', 'EMERGENCY / NEED HELP'];
-    const interval = setInterval(() => {
-      const g = gestures[Math.floor(Math.random() * gestures.length)];
-      setDetectedSignOverlay(g);
-    }, 4500);
-    return () => clearInterval(interval);
-  }, [inCall]);
-
   const setDetectedSignOverlay = (g: string) => {
     setDetectedGestureInCall(g);
     triggerHaptic(HAPTIC_PATTERNS.CLICK);
@@ -270,11 +310,11 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
           <div className="flex items-center gap-2">
             <Video className="w-5 h-5 text-cyan-400" />
             <h2 className="text-base sm:text-lg font-bold text-white">
-              Real WebRTC Video Calling & Live Sign Subtitles
+              WebRTC Video Calling & Live Subtitles
             </h2>
           </div>
           <p className="text-xs text-slate-300 mt-0.5">
-            True peer-to-peer WebRTC video calling. Detects hand signs during video and generates real-time bidirectional high-contrast subtitles.
+            Video calling with live speech captions. Sign-language recognition requires a dedicated trained vision model.
           </p>
         </div>
 
@@ -356,7 +396,7 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
                 {/* Hand Sign Bounding Box Simulation */}
                 <div className="self-center w-36 h-36 rounded-2xl border-2 border-dashed border-cyan-400/70 flex items-center justify-center">
                   <span className="text-[10px] font-mono text-cyan-300 bg-slate-950/80 px-2 py-0.5 rounded">
-                    GESTURE TRACKING
+                    SIGN RECOGNITION NOT ENABLED
                   </span>
                 </div>
 
@@ -387,7 +427,7 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
               </div>
 
               <div className="absolute top-3 left-3 bg-slate-950/80 border border-slate-700 px-2.5 py-0.5 rounded text-[11px] text-emerald-300 font-mono">
-                Remote Caller (Encrypted WebRTC)
+                Remote Caller (WebRTC)
               </div>
             </div>
 
@@ -398,9 +438,9 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
             <div className="flex items-center justify-between text-xs border-b border-slate-800 pb-2">
               <span className="font-bold text-cyan-300 flex items-center gap-1.5 uppercase font-mono">
                 <Subtitles className="w-4 h-4 text-cyan-400" />
-                Real-Time Live Subtitles & Sign Transcript
+                Live Speech Subtitles
               </span>
-              <span className="text-[10px] text-emerald-400 font-mono">SPEECH-TO-TEXT ACTIVE</span>
+              <span className="text-[10px] text-emerald-400 font-mono">LOCAL SPEECH RECOGNITION</span>
             </div>
 
             {/* Active Subtitle in Large High-Contrast Font */}
@@ -448,11 +488,11 @@ export const WebRTCCallModule: React.FC<WebRTCCallModuleProps> = ({ settings }) 
 
             {/* Quick Sign Gesture Send Button */}
             <button
-              onClick={() => setDetectedSignOverlay('THANK YOU')}
+              onClick={() => { setDetectedSignOverlay('THANK YOU (MANUAL)'); setCurrentSpeechSubtitle('You selected the quick sign message: THANK YOU.'); setSubtitlesStream((prev) => [...prev.slice(-4), 'Manual sign message: THANK YOU']); }}
               className="px-4 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-xs font-bold text-cyan-300 flex items-center gap-1.5 border border-slate-600"
             >
               <Hand className="w-4 h-4" />
-              <span>Send Quick Sign "Thank You"</span>
+              <span>Send Quick Sign Message "Thank You"</span>
             </button>
 
             {/* End Call Button */}
