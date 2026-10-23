@@ -19,6 +19,7 @@ import { speakText } from '../services/speechService';
 import { translateToSignLanguage } from '../services/geminiService';
 import { recognizeISLSequence } from '../services/islSequenceService';
 import AccessibleTalk from './AccessibleTalk';
+import { useHandGestureRecognition } from '../services/handGestureRecognition';
 
 interface SignLanguageModuleProps {
   settings: SensorySettings;
@@ -126,6 +127,11 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
   const cameraActiveRef = useRef(false);
 
   const t = (key: string) => getTranslation(settings.uiLanguage, key);
+
+  const {
+    result: liveGesture,
+    status: liveGestureStatus,
+  } = useHandGestureRecognition(videoRef, cameraActive);
 
   useEffect(() => {
     cameraActiveRef.current = cameraActive;
@@ -499,6 +505,23 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
             <p aria-live="polite" className="text-sm text-cyan-200">
               {recognitionStatus}
             </p>
+
+            <div className="rounded-lg border border-cyan-500/30 bg-slate-950 p-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-300">
+                Live Gesture Detection
+              </p>
+              <p aria-live="polite" className="text-sm text-cyan-200">
+                {liveGestureStatus}
+              </p>
+              <p className="text-lg font-bold text-white">
+                {liveGesture?.label ?? 'No gesture detected yet'}
+              </p>
+              {liveGesture && (
+                <p className="text-xs text-slate-400">
+                  Model confidence: {(liveGesture.confidence * 100).toFixed(1)}%
+                </p>
+              )}
+            </div>
 
             <button
               type="button"
