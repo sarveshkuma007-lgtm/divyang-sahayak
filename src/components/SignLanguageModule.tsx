@@ -8,12 +8,14 @@ import {
   Hand,
   RefreshCw,
   MessageSquare,
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
   Play,
-  Loader2
+  AlertTriangle,
 } from 'lucide-react';
 
 import { SensorySettings, SignGesture } from '../types';
-import { getTranslation } from '../services/localization';
 import { triggerHaptic, HAPTIC_PATTERNS } from '../services/haptics';
 import { speakText } from '../services/speechService';
 import { translateToSignLanguage } from '../services/geminiService';
@@ -25,99 +27,114 @@ interface SignLanguageModuleProps {
   settings: SensorySettings;
 }
 
+interface GestureDetail {
+  gloss: string;
+  handshape: string;
+  movement: string;
+  facialExpression: string;
+  durationMs: number;
+}
+
 const ESSENTIAL_GESTURES: SignGesture[] = [
   {
     gloss: 'HELLO',
     meaning: 'Hello / Greetings',
     meaningHindi: 'नमस्ते / अभिवादन',
-    handshape: 'Open flat palm',
-    movement: 'Wave gently',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Greeting movement',
     facialExpression: 'Friendly expression',
-    category: 'daily'
+    category: 'daily',
   },
   {
     gloss: 'THANK YOU',
     meaning: 'Thank you',
     meaningHindi: 'धन्यवाद',
-    handshape: 'Flat hand',
-    movement: 'Move hand outward',
-    facialExpression: 'Gentle smile',
-    category: 'daily'
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
+    facialExpression: 'Context dependent',
+    category: 'daily',
   },
   {
     gloss: 'HELP',
     meaning: 'I need help',
     meaningHindi: 'मुझे मदद चाहिए',
-    handshape: 'Hand configuration varies by sign',
-    movement: 'Refer to a verified ISL demonstration',
-    facialExpression: 'Urgent expression when appropriate',
-    category: 'emergency'
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
+    facialExpression: 'Context dependent',
+    category: 'emergency',
   },
   {
     gloss: 'WATER',
     meaning: 'Water',
     meaningHindi: 'पानी',
-    handshape: 'Refer to verified ISL dictionary',
-    movement: 'Refer to verified ISL demonstration',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
     facialExpression: 'Context dependent',
-    category: 'health'
+    category: 'health',
   },
   {
     gloss: 'DOCTOR',
     meaning: 'Doctor',
     meaningHindi: 'डॉक्टर',
-    handshape: 'Refer to verified ISL dictionary',
-    movement: 'Refer to verified ISL demonstration',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
     facialExpression: 'Context dependent',
-    category: 'health'
+    category: 'health',
   },
   {
     gloss: 'YES',
     meaning: 'Yes',
     meaningHindi: 'हाँ',
-    handshape: 'Refer to verified ISL dictionary',
-    movement: 'Refer to verified ISL demonstration',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
     facialExpression: 'Context dependent',
-    category: 'daily'
+    category: 'daily',
   },
   {
     gloss: 'NO',
     meaning: 'No',
     meaningHindi: 'नहीं',
-    handshape: 'Refer to verified ISL dictionary',
-    movement: 'Refer to verified ISL demonstration',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
     facialExpression: 'Context dependent',
-    category: 'daily'
+    category: 'daily',
   },
   {
     gloss: 'STOP',
     meaning: 'Stop',
     meaningHindi: 'रुकिए',
-    handshape: 'Refer to verified ISL dictionary',
-    movement: 'Refer to verified ISL demonstration',
+    handshape: 'Check a verified ISL demonstration',
+    movement: 'Refer to a verified ISL dictionary',
     facialExpression: 'Context dependent',
-    category: 'navigation'
-  }
+    category: 'navigation',
+  },
 ];
 
+const FRAME_COUNT = 8;
+const FRAME_INTERVAL_MS = 450;
+const MAX_SENTENCE_LENGTH = 1000;
+
 export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
-  settings
+  settings,
 }) => {
   const [cameraActive, setCameraActive] = useState(false);
-  const [detectedSign, setDetectedSign] =
-    useState<SignGesture | null>(null);
+  const [detectedSign, setDetectedSign] = useState<SignGesture | null>(null);
 
-  const [inputText, setInputText] = useState(
-    'How can I help you safely cross?'
-  );
-
+  const [inputText, setInputText] = useState('');
   const [isTranslating, setIsTranslating] = useState(false);
+
   const [translatedGloss, setTranslatedGloss] = useState<string[]>([]);
+  const [gestureDetails, setGestureDetails] = useState<GestureDetail[]>([]);
+  const [translationExplanation, setTranslationExplanation] = useState('');
   const [activeGlossIndex, setActiveGlossIndex] = useState(0);
 
   const [recognizedSentence, setRecognizedSentence] = useState('');
-  const [recognitionStatus, setRecognitionStatus] =
-    useState('Camera off');
+  const [recognizedGloss, setRecognizedGloss] = useState<string[]>([]);
+  const [recognitionConfidence, setRecognitionConfidence] = useState(0);
+  const [recognitionObservations, setRecognitionObservations] = useState('');
+  const [recognitionUncertain, setRecognitionUncertain] = useState(true);
+
+  const [recognitionStatus, setRecognitionStatus] = useState('Camera off');
   const [recognitionBusy, setRecognitionBusy] = useState(false);
   const [recognitionError, setRecognitionError] = useState('');
 
@@ -125,20 +142,20 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRunningRef = useRef(false);
   const cameraActiveRef = useRef(false);
+  const mountedRef = useRef(true);
 
-  const t = (key: string) => getTranslation(settings.uiLanguage, key);
-
-  const {
-    result: liveGesture,
-    status: liveGestureStatus,
-  } = useHandGestureRecognition(videoRef, cameraActive);
+  const { result: liveGesture, status: liveGestureStatus } =
+    useHandGestureRecognition(videoRef, cameraActive);
 
   useEffect(() => {
     cameraActiveRef.current = cameraActive;
   }, [cameraActive]);
 
   useEffect(() => {
+    mountedRef.current = true;
+
     return () => {
+      mountedRef.current = false;
       cameraActiveRef.current = false;
 
       if (streamRef.current) {
@@ -167,14 +184,14 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
   };
 
   const toggleCamera = async () => {
-    if (cameraActive) {
+    if (cameraActiveRef.current) {
       stopCamera();
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setRecognitionError(
-        'Camera access is unavailable. Use HTTPS or localhost and a supported browser.'
+        'Camera access is unavailable. Use HTTPS or localhost and a supported browser.',
       );
       return;
     }
@@ -182,27 +199,36 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     setRecognitionError('');
     setRecognitionStatus('Requesting camera permission…');
 
+    let stream: MediaStream | null = null;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'user',
           width: { ideal: 640 },
-          height: { ideal: 480 }
+          height: { ideal: 480 },
         },
-        audio: false
+        audio: false,
       });
+
+      if (!mountedRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
 
       streamRef.current = stream;
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      if (!videoRef.current) {
+        throw new Error('Camera preview is not ready.');
       }
+
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
 
       cameraActiveRef.current = true;
       setCameraActive(true);
       setRecognitionStatus(
-        'Camera ready. Keep your hands visible and analyze a signing sequence.'
+        'Camera ready. Sign naturally, keeping your hands and upper body visible.',
       );
 
       triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
@@ -210,24 +236,21 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
       speakText(
         'Camera enabled. Show your signing clearly to the camera.',
         settings.uiLanguage,
-        settings.voiceSpeed
+        settings.voiceSpeed,
       );
     } catch (error) {
-      console.error('Camera initialization failed:', error);
+      stream?.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      cameraActiveRef.current = false;
 
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
+      if (!mountedRef.current) return;
 
       setCameraActive(false);
-      cameraActiveRef.current = false;
       setRecognitionStatus('Camera unavailable.');
-
       setRecognitionError(
         error instanceof Error
           ? error.message
-          : 'Could not start the camera. Check camera permissions.'
+          : 'Could not start the camera. Check camera permissions.',
       );
     }
   };
@@ -260,6 +283,11 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     return canvas.toDataURL('image/jpeg', 0.65);
   };
 
+  const wait = (milliseconds: number) =>
+    new Promise<void>(resolve => {
+      window.setTimeout(resolve, milliseconds);
+    });
+
   const analyzeSigningSequence = async () => {
     if (
       !cameraActiveRef.current ||
@@ -271,23 +299,22 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     recognitionRunningRef.current = true;
     setRecognitionBusy(true);
     setRecognitionError('');
-    setRecognitionStatus('Capturing signing sequence…');
+    setRecognitionStatus('Recording a short signing sequence…');
 
     try {
       const frames: string[] = [];
 
-      // Capture several frames so the API can inspect changes over time.
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < FRAME_COUNT; i++) {
         if (!cameraActiveRef.current) break;
 
         const frame = captureFrame();
 
-        if (frame) frames.push(frame);
+        if (frame) {
+          frames.push(frame);
+        }
 
-        if (i < 4) {
-          await new Promise<void>(resolve => {
-            window.setTimeout(resolve, 300);
-          });
+        if (i < FRAME_COUNT - 1) {
+          await wait(FRAME_INTERVAL_MS);
         }
       }
 
@@ -298,82 +325,127 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
 
       if (frames.length < 2) {
         setRecognitionStatus(
-          'Not enough camera frames. Keep the camera running and try again.'
+          'Not enough usable frames. Keep your hands visible and try again.',
         );
         return;
       }
 
-      setRecognitionStatus('Analyzing frames…');
+      setRecognitionStatus(
+        `Analyzing ${frames.length} frames. This may take a few seconds…`,
+      );
 
       const result = await recognizeISLSequence(
         frames,
-        settings.uiLanguage === 'hi' ? 'Hindi' : 'English'
+        settings.uiLanguage === 'hi' ? 'Hindi' : 'English',
       );
 
-      if (!cameraActiveRef.current) return;
+      if (!mountedRef.current || !cameraActiveRef.current) return;
+
+      setRecognizedGloss(result.gloss);
+      setRecognitionConfidence(result.confidence);
+      setRecognitionObservations(result.observations);
+      setRecognitionUncertain(result.uncertain);
 
       if (result.recognizedText.trim()) {
         setRecognizedSentence(result.recognizedText.trim());
-        // Speak the interpreted sentence automatically; keep the manual button too.
-        speakText(
-          result.recognizedText.trim(),
-          settings.uiLanguage,
-          settings.voiceSpeed
-        );
 
         setRecognitionStatus(
           result.uncertain
-            ? 'Possible interpretation — please verify.'
-            : 'Interpretation received. Verify its accuracy.'
+            ? 'Possible interpretation received. Please verify it.'
+            : 'Interpretation received. Verify before relying on it.',
         );
       } else {
+        setRecognizedSentence('');
         setRecognitionStatus(
-          'The sequence was unclear. Try again with both hands visible and good lighting.'
+          'The sequence could not be interpreted confidently. Try slower signing, better lighting, and a wider camera view.',
         );
       }
     } catch (error) {
       console.error('ISL sequence recognition failed:', error);
 
+      if (!mountedRef.current) return;
+
       setRecognitionError(
         error instanceof Error
           ? error.message
-          : 'Could not analyze the signing sequence.'
+          : 'Could not analyze the signing sequence.',
       );
 
       setRecognitionStatus('Recognition unavailable.');
     } finally {
       recognitionRunningRef.current = false;
-      setRecognitionBusy(false);
+
+      if (mountedRef.current) {
+        setRecognitionBusy(false);
+      }
     }
   };
 
   const handleTranslateTextToSign = async () => {
-    if (!inputText.trim() || isTranslating) return;
+    const sentence = inputText.trim();
+
+    if (!sentence || isTranslating) return;
 
     setIsTranslating(true);
     setRecognitionError('');
+    setTranslatedGloss([]);
+    setGestureDetails([]);
+    setTranslationExplanation('');
+    setActiveGlossIndex(0);
+
     triggerHaptic(HAPTIC_PATTERNS.CLICK);
 
     try {
-      const response = await translateToSignLanguage(inputText);
+      const response = await translateToSignLanguage(
+        sentence,
+        'ISL',
+      );
 
-      if (response.signGloss?.length) {
-        setTranslatedGloss(response.signGloss);
-        setActiveGlossIndex(0);
+      if (!mountedRef.current) return;
+
+      const gloss = Array.isArray(response.signGloss)
+        ? response.signGloss.filter(
+            token => typeof token === 'string' && token.trim(),
+          )
+        : [];
+
+      const details = Array.isArray(response.gestureDetails)
+        ? response.gestureDetails.filter(
+            detail =>
+              detail &&
+              typeof detail.gloss === 'string',
+          )
+        : [];
+
+      setTranslatedGloss(gloss);
+      setGestureDetails(details);
+      setTranslationExplanation(
+        typeof response.simpleExplanation === 'string'
+          ? response.simpleExplanation
+          : '',
+      );
+
+      if (gloss.length > 0) {
         triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
       } else {
-        setTranslatedGloss([]);
+        setRecognitionError(
+          'The translation did not return a usable gloss sequence. Try rephrasing the sentence.',
+        );
       }
     } catch (error) {
       console.error('Text-to-sign translation failed:', error);
 
+      if (!mountedRef.current) return;
+
       setRecognitionError(
         error instanceof Error
           ? error.message
-          : 'Text-to-sign translation failed.'
+          : 'Text-to-sign translation failed.',
       );
     } finally {
-      setIsTranslating(false);
+      if (mountedRef.current) {
+        setIsTranslating(false);
+      }
     }
   };
 
@@ -386,11 +458,7 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
         ? `${gesture.gloss}. ${gesture.meaningHindi}`
         : `${gesture.gloss}. ${gesture.meaning}`;
 
-    speakText(
-      message,
-      settings.uiLanguage,
-      settings.voiceSpeed
-    );
+    speakText(message, settings.uiLanguage, settings.voiceSpeed);
   };
 
   const speakRecognizedSentence = () => {
@@ -399,16 +467,39 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     speakText(
       recognizedSentence,
       settings.uiLanguage,
-      settings.voiceSpeed
+      settings.voiceSpeed,
     );
   };
 
   const currentGloss =
     translatedGloss[activeGlossIndex] || 'SIGN READY';
 
+  const currentGestureDetail =
+    gestureDetails.find(
+      detail =>
+        detail.gloss.toLowerCase() ===
+        currentGloss.toLowerCase(),
+    ) || gestureDetails[activeGlossIndex];
+
+  const resetTranslation = () => {
+    setActiveGlossIndex(0);
+    triggerHaptic(HAPTIC_PATTERNS.CLICK);
+  };
+
+  const moveGloss = (direction: -1 | 1) => {
+    setActiveGlossIndex(index =>
+      Math.max(
+        0,
+        Math.min(translatedGloss.length - 1, index + direction),
+      ),
+    );
+
+    triggerHaptic(HAPTIC_PATTERNS.CLICK);
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-800/50 border border-slate-700">
+      <header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-800/50 border border-slate-700">
         <div>
           <div className="flex items-center gap-2">
             <Hand className="w-5 h-5 text-cyan-400" />
@@ -418,8 +509,8 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
           </div>
 
           <p className="text-xs text-slate-300 mt-1">
-            Experimental camera sequence analysis and text-to-gloss support.
-            This is not yet validated continuous ISL translation.
+            Experimental sequence interpretation and structured sign
+            translation.
           </p>
         </div>
 
@@ -437,10 +528,9 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
           ) : (
             <Camera className="w-4 h-4" />
           )}
-
           {cameraActive ? 'Stop Camera' : 'Start Camera'}
         </button>
-      </div>
+      </header>
 
       {recognitionError && (
         <div
@@ -452,15 +542,14 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Sign to text */}
+        {/* Sign to text and speech */}
         <section className="p-5 rounded-2xl bg-slate-800/50 border border-slate-700 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Camera className="w-4 h-4 text-cyan-400" />
-              Sign to Text
+              Sign to Text & Speech
             </h3>
-
-            <span className="text-[10px] text-cyan-300">
+            <span className="text-[10px] text-amber-300">
               EXPERIMENTAL
             </span>
           </div>
@@ -479,13 +568,11 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
             {!cameraActive && (
               <div className="p-6 text-center space-y-2">
                 <Hand className="w-10 h-10 text-cyan-400 mx-auto" />
-
                 <p className="text-sm font-bold text-white">
                   Camera standby
                 </p>
-
                 <p className="text-xs text-slate-400">
-                  Start the camera before analyzing a signing sequence.
+                  Start the camera to capture a signing sequence.
                 </p>
               </div>
             )}
@@ -508,19 +595,28 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
 
             <div className="rounded-lg border border-cyan-500/30 bg-slate-950 p-3 space-y-2">
               <p className="text-xs font-semibold text-slate-300">
-                Live Gesture Detection
+                Live Hand Gesture Model
               </p>
+
               <p aria-live="polite" className="text-sm text-cyan-200">
                 {liveGestureStatus}
               </p>
+
               <p className="text-lg font-bold text-white">
                 {liveGesture?.label ?? 'No gesture detected yet'}
               </p>
+
               {liveGesture && (
                 <p className="text-xs text-slate-400">
-                  Model confidence: {(liveGesture.confidence * 100).toFixed(1)}%
+                  Model confidence:{' '}
+                  {(liveGesture.confidence * 100).toFixed(1)}%
                 </p>
               )}
+
+              <p className="text-xs text-slate-500">
+                This detector recognizes a limited set of generic hand
+                gestures; it is not a complete ISL sentence model.
+              </p>
             </div>
 
             <button
@@ -537,7 +633,7 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
 
               {recognitionBusy
                 ? 'Analyzing sequence…'
-                : 'Analyze Signing Sequence'}
+                : `Analyze ${FRAME_COUNT}-Frame Sequence`}
             </button>
 
             <div className="rounded-lg bg-slate-950 p-3 min-h-20">
@@ -545,26 +641,71 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
                 INTERPRETED SENTENCE
               </p>
 
-              <p className="mt-2 text-sm text-white">
+              <p className="mt-2 text-sm text-white whitespace-pre-wrap">
                 {recognizedSentence ||
                   'Your interpreted text will appear here.'}
               </p>
             </div>
 
-            <button
-              type="button"
-              onClick={speakRecognizedSentence}
-              disabled={!recognizedSentence}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs font-bold disabled:opacity-50"
-            >
-              <Volume2 className="w-4 h-4" />
-              Speak interpreted text
-            </button>
+            {recognizedGloss.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-slate-300">
+                  Suggested gloss sequence
+                </p>
+
+                <div className="flex flex-wrap gap-2">
+                  {recognizedGloss.map((token, index) => (
+                    <span
+                      key={`${token}-${index}`}
+                      className="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs text-cyan-200"
+                    >
+                      {token}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {recognitionObservations && (
+              <div className="rounded-lg border border-slate-700 p-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Model observations
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {recognitionObservations}
+                </p>
+              </div>
+            )}
+
+            {recognizedSentence && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <span>
+                    Model confidence: {(recognitionConfidence * 100).toFixed(0)}%
+                  </span>
+                  {recognitionUncertain && (
+                    <span className="flex items-center gap-1 text-amber-300">
+                      <AlertTriangle className="w-3 h-3" />
+                      Uncertain
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={speakRecognizedSentence}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs font-bold"
+                >
+                  <Volume2 className="w-4 h-4" />
+                  Speak interpreted text
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">
             <p className="text-xs font-semibold text-slate-300">
-              Example sign cards — for manual testing only
+              Example sign cards — manual selection only
             </p>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -582,7 +723,6 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
                   <span className="text-xs font-bold block">
                     {gesture.gloss}
                   </span>
-
                   <span className="text-[10px] text-slate-400 block">
                     {gesture.meaning}
                   </span>
@@ -596,26 +736,26 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
               <p className="text-sm font-bold text-white">
                 {detectedSign.gloss}
               </p>
-
               <p className="text-xs text-slate-300">
                 {detectedSign.handshape}
               </p>
-
               <p className="text-xs text-slate-300">
                 {detectedSign.movement}
               </p>
-
+              <p className="text-xs text-slate-400">
+                {detectedSign.facialExpression}
+              </p>
               <button
                 type="button"
-                onClick={() => {
+                onClick={() =>
                   speakText(
                     settings.uiLanguage === 'hi'
                       ? detectedSign.meaningHindi
                       : detectedSign.meaning,
                     settings.uiLanguage,
-                    settings.voiceSpeed
-                  );
-                }}
+                    settings.voiceSpeed,
+                  )
+                }
                 className="flex items-center gap-2 text-xs text-cyan-300"
               >
                 <Volume2 className="w-4 h-4" />
@@ -625,13 +765,12 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
           )}
         </section>
 
-        {/* Text to sign */}
+        {/* Text to structured sign sequence */}
         <section className="p-5 rounded-2xl bg-slate-800/50 border border-slate-700 space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-700 pb-3">
             <MessageSquare className="w-4 h-4 text-cyan-400" />
-
             <h3 className="text-sm font-bold text-white">
-              Text to Sign Gloss
+              Text to Sign Sequence
             </h3>
           </div>
 
@@ -646,11 +785,15 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
             id="isl-input-text"
             value={inputText}
             onChange={event => setInputText(event.target.value)}
-            rows={3}
-            maxLength={1000}
+            rows={4}
+            maxLength={MAX_SENTENCE_LENGTH}
             placeholder="Enter the sentence you want to communicate…"
             className="w-full px-3 py-3 text-sm rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
           />
+
+          <p className="text-right text-xs text-slate-500">
+            {inputText.length}/{MAX_SENTENCE_LENGTH}
+          </p>
 
           <button
             type="button"
@@ -665,8 +808,8 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
             )}
 
             {isTranslating
-              ? 'Translating…'
-              : 'Translate to Sign Gloss'}
+              ? 'Creating sign sequence…'
+              : 'Translate Sentence to Signs'}
           </button>
 
           <div className="rounded-xl bg-slate-950 border border-slate-700 p-4">
@@ -679,7 +822,7 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
             </div>
 
             <p className="text-xs text-slate-400 mt-2">
-              This is a gloss preview, not a real sign animation.
+              Gloss is a written representation, not an animated sign.
             </p>
           </div>
 
@@ -692,10 +835,7 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
               {translatedGloss.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setActiveGlossIndex(0);
-                    triggerHaptic(HAPTIC_PATTERNS.CLICK);
-                  }}
+                  onClick={resetTranslation}
                   className="flex items-center gap-1 text-xs text-cyan-300"
                 >
                   <RefreshCw className="w-3 h-3" />
@@ -730,38 +870,108 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
               <button
                 type="button"
                 disabled={activeGlossIndex === 0}
-                onClick={() =>
-                  setActiveGlossIndex(index => Math.max(0, index - 1))
-                }
-                className="flex-1 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs disabled:opacity-40"
+                onClick={() => moveGloss(-1)}
+                className="flex-1 flex items-center justify-center gap-1 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs disabled:opacity-40"
               >
+                <ChevronLeft className="w-4 h-4" />
                 Previous
               </button>
 
               <button
                 type="button"
                 disabled={activeGlossIndex >= translatedGloss.length - 1}
-                onClick={() =>
-                  setActiveGlossIndex(index =>
-                    Math.min(translatedGloss.length - 1, index + 1)
-                  )
-                }
-                className="flex-1 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs disabled:opacity-40"
+                onClick={() => moveGloss(1)}
+                className="flex-1 flex items-center justify-center gap-1 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs disabled:opacity-40"
               >
                 Next sign
+                <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           )}
 
+          {currentGestureDetail && (
+            <div className="rounded-xl border border-cyan-500/30 bg-slate-950 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-bold text-cyan-200">
+                  {currentGestureDetail.gloss}
+                </p>
+                <span className="text-xs text-slate-400">
+                  {currentGestureDetail.durationMs > 0
+                    ? `${currentGestureDetail.durationMs} ms`
+                    : 'Timing unspecified'}
+                </span>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-slate-300">
+                  Handshape
+                </p>
+                <p className="text-sm text-slate-400">
+                  {currentGestureDetail.handshape || 'Not specified'}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-slate-300">
+                  Movement
+                </p>
+                <p className="text-sm text-slate-400">
+                  {currentGestureDetail.movement || 'Not specified'}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-slate-300">
+                  Facial expression
+                </p>
+                <p className="text-sm text-slate-400">
+                  {currentGestureDetail.facialExpression || 'Not specified'}
+                </p>
+              </div>
+
+              <p className="text-xs text-amber-200/90">
+                These details are AI-generated descriptions. Verify them
+                with an ISL-fluent reviewer before relying on them.
+              </p>
+            </div>
+          )}
+
+          {translationExplanation && (
+            <div className="rounded-xl border border-slate-700 bg-slate-900 p-3">
+              <p className="text-xs font-semibold text-slate-300">
+                Translation notes
+              </p>
+              <p className="text-sm text-slate-400 mt-1">
+                {translationExplanation}
+              </p>
+            </div>
+          )}
+
+          {translatedGloss.length > 0 && (
+            <button
+              type="button"
+              onClick={() =>
+                speakText(
+                  inputText,
+                  settings.uiLanguage,
+                  settings.voiceSpeed,
+                )
+              }
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs font-bold"
+            >
+              <Play className="w-4 h-4" />
+              Speak original sentence
+            </button>
+          )}
+
           <p className="text-xs text-amber-200/90">
-            For accessibility use, verify translations with an ISL-fluent
-            reviewer. Actual sign demonstrations require verified video
-            assets or a trained signing avatar.
+            A gloss sequence is not a complete ISL translation or a
+            signing avatar. Real signing output requires verified
+            demonstrations or a trained, validated avatar model.
           </p>
         </section>
       </div>
 
-      {/* Accessible conversation for people who do not know sign language */}
       <AccessibleTalk />
     </div>
   );
