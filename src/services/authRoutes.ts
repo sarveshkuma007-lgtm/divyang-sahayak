@@ -1,5 +1,5 @@
-
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
+import type { Request, Response } from 'express';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 import {
@@ -25,10 +25,7 @@ const EXPECTED_ORIGIN =
 const ACCOUNT_EMAIL = (process.env.APP_LOGIN_EMAIL || '')
   .trim()
   .toLowerCase();
-console.log(
-  '[AUTH DEBUG] APP_LOGIN_EMAIL loaded:',
-  ACCOUNT_EMAIL || '(EMPTY)'
-);
+
 const ACCOUNT_PASSWORD = process.env.APP_LOGIN_PASSWORD || '';
 
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
@@ -277,7 +274,7 @@ function hasValidEnrollmentToken(req: Request): boolean {
 }
 
 /* =========================================================
-   PASSWORD LOGIN — OPTIONAL FALLBACK
+   PASSWORD LOGIN â€” OPTIONAL FALLBACK
    POST /api/auth/login
    ========================================================= */
 
