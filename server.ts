@@ -440,7 +440,7 @@ Return JSON only:
       return;
     }
 
-    const model = process.env.GEMINI_VISION_MODEL || 'gemini-3.5-flash-lite';
+    const GEMINI_MODEL = "gemini-3.6-flash";
     const requestBody = {
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents: [{

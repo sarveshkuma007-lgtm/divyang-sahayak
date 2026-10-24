@@ -141,11 +141,34 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recognitionRunningRef = useRef(false);
+  const lastSpokenSentenceRef = useRef('');
   const cameraActiveRef = useRef(false);
   const mountedRef = useRef(true);
 
   const { result: liveGesture, status: liveGestureStatus } =
     useHandGestureRecognition(videoRef, cameraActive);
+
+  // Speak ONLY the recognized sign-language text. Status messages, gesture
+  // model labels, confidence scores, observations, and errors stay silent.
+  useEffect(() => {
+    const sentence = recognizedSentence.trim();
+    if (!sentence || sentence === lastSpokenSentenceRef.current) return;
+    if (!("speechSynthesis" in window)) return;
+
+    lastSpokenSentenceRef.current = sentence;
+    const timer = window.setTimeout(() => {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(sentence);
+      utterance.lang = settings.uiLanguage === 'hi' ? 'hi-IN' : 'en-IN';
+      utterance.rate = Math.min(2, Math.max(0.5, settings.voiceSpeed || 1));
+      utterance.onerror = event => {
+        console.error('ISL recognized-text speech failed:', event.error);
+      };
+      window.speechSynthesis.speak(utterance);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [recognizedSentence, settings.uiLanguage, settings.voiceSpeed]);
 
   useEffect(() => {
     cameraActiveRef.current = cameraActive;
@@ -371,16 +394,11 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
 
       if (result.recognizedText.trim()) {
         setRecognizedSentence(result.recognizedText.trim());
-
-        setRecognitionStatus(
-          result.uncertain
-            ? 'Possible interpretation received. Please verify it.'
-            : 'Interpretation received. Verify before relying on it.',
-        );
+        setRecognitionStatus('Sign interpretation received.');
       } else {
         setRecognizedSentence('');
         setRecognitionStatus(
-          'The sequence could not be interpreted confidently. Try slower signing, better lighting, and a wider camera view.',
+          'No text was returned by the recognition service. Try again with your hands clearly visible.',
         );
       }
     } catch (error) {
@@ -403,6 +421,24 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
       }
     }
   };
+
+
+  // Automatically analyze signing periodically while the camera is active.
+  // Each cycle captures several frames; the ref prevents overlapping runs.
+  useEffect(() => {
+    if (!cameraActive) return;
+
+    const timer = window.setInterval(() => {
+      if (
+        cameraActiveRef.current &&
+        !recognitionRunningRef.current
+      ) {
+        void analyzeSigningSequence();
+      }
+    }, 6000);
+
+    return () => window.clearInterval(timer);
+  }, [cameraActive, settings.uiLanguage]);
 
   const handleTranslateTextToSign = async () => {
     const sentence = inputText.trim();
@@ -476,22 +512,46 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     setDetectedSign(gesture);
     triggerHaptic(HAPTIC_PATTERNS.CLICK);
 
-    const message =
-      settings.uiLanguage === 'hi'
-        ? `${gesture.gloss}. ${gesture.meaningHindi}`
-        : `${gesture.gloss}. ${gesture.meaning}`;
-
-    speakText(message, settings.uiLanguage, settings.voiceSpeed);
   };
 
   const speakRecognizedSentence = () => {
-    if (!recognizedSentence.trim()) return;
+    const sentence = recognizedSentence.trim();
+    if (!sentence) return;
 
-    speakText(
-      recognizedSentence,
-      settings.uiLanguage,
-      settings.voiceSpeed,
-    );
+    if (!('speechSynthesis' in window)) {
+      setRecognitionStatus('Speech output is not supported by this browser.');
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(sentence);
+    utterance.lang = settings.uiLanguage === 'hi' ? 'hi-IN' : 'en-IN';
+    utterance.rate = Math.min(2, Math.max(0.5, settings.voiceSpeed || 1));
+    utterance.onerror = event => {
+      console.error('ISL manual speech failed:', event.error);
+      setRecognitionStatus(`Speech output failed: ${event.error}`);
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const testVoiceOutput = () => {
+    if (!('speechSynthesis' in window)) {
+      setRecognitionStatus('Speech output is not supported by this browser.');
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const testText = settings.uiLanguage === 'hi'
+      ? 'साइन लैंग्वेज वॉइस असिस्टेंट काम कर रहा है।'
+      : 'The sign language voice assistant is working.';
+    const utterance = new SpeechSynthesisUtterance(testText);
+    utterance.lang = settings.uiLanguage === 'hi' ? 'hi-IN' : 'en-IN';
+    utterance.rate = Math.min(2, Math.max(0.5, settings.voiceSpeed || 1));
+    utterance.onerror = event => {
+      console.error('ISL test voice failed:', event.error);
+      setRecognitionStatus(`Test voice failed: ${event.error}`);
+    };
+    window.speechSynthesis.speak(utterance);
   };
 
   const currentGloss =
@@ -714,14 +774,24 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={speakRecognizedSentence}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs font-bold"
-                >
-                  <Volume2 className="w-4 h-4" />
-                  Speak interpreted text
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={speakRecognizedSentence}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-600 text-white text-xs font-bold"
+                  >
+                    <Volume2 className="w-4 h-4" />
+                    Speak interpreted text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={testVoiceOutput}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold"
+                  >
+                    <Volume2 className="w-4 h-4" />
+                    Test voice
+                  </button>
+                </div>
               </div>
             )}
           </div>

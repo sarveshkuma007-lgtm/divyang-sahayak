@@ -100,9 +100,19 @@ export function LiveAccessibleMap() {
     mapRef.current = map;
     tileLayerRef.current = layer;
 
-    const resizeTimer = window.setTimeout(() => map.invalidateSize(), 250);
+    // Leaflet needs a size refresh after the responsive dashboard layout settles.
+    const resizeTimer = window.setTimeout(() => {
+      map.invalidateSize({ pan: false });
+    }, 300);
+
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize({ pan: false });
+    });
+    if (mapElement.current) resizeObserver.observe(mapElement.current);
+
     return () => {
       window.clearTimeout(resizeTimer);
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
       tileLayerRef.current = null;
@@ -343,8 +353,8 @@ export function LiveAccessibleMap() {
         ref={mapElement}
         role="region"
         aria-label="Interactive map. Use controls to zoom and pan."
-        className="w-full overflow-hidden rounded-xl border border-slate-600 bg-slate-800"
-        style={{ height: 380, minHeight: 300 }}
+        className="relative z-0 block w-full max-w-full overflow-hidden rounded-xl border border-slate-600 bg-slate-800"
+        style={{ height: 'clamp(240px, 38vh, 340px)', minHeight: 240, maxHeight: 340 }}
       />
 
       <p role="status" aria-live="polite" className="break-words rounded-lg bg-slate-800 p-3 text-xs text-slate-200">

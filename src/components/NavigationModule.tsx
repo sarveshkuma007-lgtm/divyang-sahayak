@@ -42,7 +42,8 @@ import {
 } from '../services/audioBeacon';
 
 import { speakText } from '../services/speechService';
-import { analyzeSceneVision } from '../services/geminiService';
+import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import '@tensorflow/tfjs';
 import { LiveAccessibleMap } from './LiveAccessibleMap';
 
 interface NavigationModuleProps {
@@ -126,6 +127,91 @@ const SAMPLE_ROUTES: NavigationRoute[] = [
 
 type DetectionBox = { x: number; y: number; width: number; height: number };
 type DetectedObstacle = ObstacleItem & { boundingBox?: DetectionBox | null };
+
+type LocalScanResult = {
+  obstacles: DetectedObstacle[];
+  spokenGuidance: string;
+  hapticCode: 'STOP_DANGER' | 'LEFT' | 'RIGHT' | 'CLEAR';
+};
+
+let localDetectionModelPromise: Promise<cocoSsd.ObjectDetection> | null = null;
+
+async function detectObjectsLocally(source: HTMLCanvasElement): Promise<LocalScanResult> {
+  if (!localDetectionModelPromise) {
+    localDetectionModelPromise = cocoSsd.load({ base: 'lite_mobilenet_v2' });
+  }
+
+  const model = await localDetectionModelPromise;
+  const predictions = await model.detect(source);
+
+  const obstacles: DetectedObstacle[] = predictions
+    .filter((prediction) => prediction.score >= 0.45)
+    .map((prediction) => {
+      const [x, y, width, height] = prediction.bbox;
+      const centerX = x + width / 2;
+      const position = centerX < source.width / 3
+        ? 'left'
+        : centerX > (source.width * 2) / 3
+          ? 'right'
+          : 'center';
+      const label = prediction.class;
+      const criticalObjects = ['car', 'truck', 'bus', 'motorcycle', 'bicycle'];
+      const urgency = criticalObjects.includes(label)
+        ? 'critical'
+        : ['person', 'chair', 'couch', 'bed', 'potted plant'].includes(label)
+          ? 'medium'
+          : 'low';
+
+      return {
+        label,
+        position,
+        // Monocular object detection cannot reliably measure distance.
+        // This is a rough placeholder, not a measured distance.
+        distanceMeters: 2,
+        urgency,
+        boundingBox: { x, y, width, height },
+      } as DetectedObstacle;
+    });
+
+  const critical = obstacles.filter((item) => item.urgency === 'critical');
+  const medium = obstacles.filter((item) => item.urgency === 'medium');
+
+  let spokenGuidance = 'I can identify objects, but I cannot confirm that the path is safe. Stop and check your surroundings.';
+  let hapticCode: LocalScanResult['hapticCode'] = 'CLEAR';
+
+  if (critical.length > 0) {
+    const first = critical[0];
+    spokenGuidance = `Caution. ${first.label} detected ${first.position}. Stop and check your surroundings.`;
+    hapticCode = 'STOP_DANGER';
+  } else if (medium.length > 0) {
+    const first = medium[0];
+    spokenGuidance = `Caution. ${first.label} detected ${first.position}. Move carefully and verify the path.`;
+    hapticCode = first.position === 'left' ? 'RIGHT' : first.position === 'right' ? 'LEFT' : 'STOP_DANGER';
+  } else if (obstacles.length > 0) {
+    spokenGuidance = `Objects detected: ${obstacles.slice(0, 3).map((item) => item.label).join(', ')}. I cannot confirm the path is clear. Please check your surroundings.`;
+  } else {
+    spokenGuidance = 'No supported objects detected in this frame. This does not guarantee the path is clear; check your surroundings.';
+  }
+
+  return { obstacles, spokenGuidance, hapticCode };
+}
+
+async function analyzeUploadedImageLocally(dataUrl: string): Promise<LocalScanResult> {
+  const image = new Image();
+  image.src = dataUrl;
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('Could not load the selected image.'));
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.min(image.naturalWidth || image.width, 640);
+  canvas.height = Math.max(1, Math.round(canvas.width * (image.naturalHeight || image.height) / (image.naturalWidth || image.width)));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Unable to prepare the uploaded image for local analysis.');
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return detectObjectsLocally(canvas);
+}
 
 const NavigationModule: React.FC<NavigationModuleProps> = ({
   settings,
@@ -303,13 +389,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
 
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const base64Image = canvas.toDataURL('image/jpeg', 0.7);
-
-      const result = await analyzeSceneVision(
-        base64Image,
-        'navigation',
-        settings.uiLanguage === 'hi' ? 'Hindi' : 'English',
-      );
+      const result = await detectObjectsLocally(canvas);
 
       setObstacles(Array.isArray(result.obstacles) ? result.obstacles : []);
       setHasAnalyzedFrame(true);
@@ -345,7 +425,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
       setScanError(
         error instanceof Error
           ? error.message
-          : 'Obstacle analysis failed. Check the server and Gemini API key, then try again.',
+          : 'Obstacle analysis failed. Check that local object-detection packages are installed, then try again.',
       );
       setCameraStatus('Analysis failed.');
 
@@ -401,11 +481,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
 
       setUploadedImage(dataUrl);
 
-      const result = await analyzeSceneVision(
-        dataUrl,
-        'navigation',
-        settings.uiLanguage === 'hi' ? 'Hindi' : 'English',
-      );
+      const result = await analyzeUploadedImageLocally(dataUrl);
 
       setObstacles(Array.isArray(result.obstacles) ? result.obstacles : []);
       setHasAnalyzedFrame(true);
@@ -423,7 +499,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
       setScanError(
         error instanceof Error
           ? error.message
-          : 'Image analysis failed. Check the server and Gemini API key.',
+          : 'Local image analysis failed. Check that local object-detection packages are installed.',
       );
       setCameraStatus('Image analysis failed.');
     } finally {
@@ -489,7 +565,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
   const currentStep = selectedRoute.tactileSteps[currentStepIndex];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-800/50 border border-slate-700">
         <div>
           <div className="flex items-center gap-2">
@@ -501,7 +577,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
 
           <p className="text-xs text-slate-300 mt-0.5">
             Interactive GPS map, voice guidance, haptic feedback and
-            camera-based obstacle analysis.
+            on-device camera object detection.
           </p>
         </div>
 
@@ -539,7 +615,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
         <div className="lg:col-span-7 space-y-4">
           <div className="space-y-2">
             <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
@@ -806,7 +882,7 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
                 <div className="p-6 text-center space-y-2">
                   <Camera className="w-8 h-8 text-slate-600 mx-auto" />
                   <p className="text-xs text-slate-400">
-                    Activate the camera to capture a real frame for AI analysis.
+                    Activate the camera to scan a frame using on-device object detection.
                   </p>
                   <button
                     type="button"

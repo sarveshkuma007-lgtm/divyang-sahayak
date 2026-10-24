@@ -674,6 +674,14 @@ export default function App() {
           triggerHaptic(HAPTIC_PATTERNS.EMERGENCY_SOS);
           setSosModalOpen(true);
         }}
+        readingMode={settings.theme === 'warm-amber'}
+        onToggleReadingMode={() => {
+          handleUpdateSettings({
+            theme: settings.theme === 'warm-amber'
+              ? 'eye-comfort'
+              : 'warm-amber',
+          });
+        }}
       >
         {activeTab === 'navigation' && (
           <NavigationModule settings={settings} />
