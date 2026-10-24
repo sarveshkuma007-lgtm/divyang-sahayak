@@ -8,7 +8,7 @@ import path from 'path';
 
 import { fileURLToPath } from 'url';
 
-import authRoutes from './src/services/authRoutes';
+import authRoutes from './src/services/authRoutes.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 
