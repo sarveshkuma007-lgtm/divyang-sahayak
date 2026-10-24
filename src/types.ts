@@ -1,4 +1,24 @@
-export type AccessibilityProfile = 'deaf' | 'mute' | 'blind' | 'deaf-blind' | 'general';
+
+export type AccessibilityProfile =
+  | 'deaf'
+  | 'mute'
+  | 'blind'
+  | 'deaf-blind'
+  | 'general';
+
+export type SupportedLanguage =
+  | 'en'
+  | 'hi'
+  | 'mr'
+  | 'bn'
+  | 'ta'
+  | 'te'
+  | 'gu'
+  | 'kn'
+  | 'ml'
+  | 'pa'
+  | 'ur'
+  | 'or';
 
 export type SensoryTheme =
   | 'eye-comfort' // Gentle soothing blue-slate, non-irritating for deaf/sensory sensitivity
@@ -17,7 +37,7 @@ export interface SensorySettings {
   hapticFeedback: boolean;
   soundRadar: boolean;
   voiceSpeed: number; // 0.8 to 1.5
-  uiLanguage: 'hi' | 'en' | 'es' | 'bn' | 'ta' | 'mr';
+  uiLanguage: SupportedLanguage;
 }
 
 export interface ObstacleItem {
@@ -47,7 +67,12 @@ export interface DocumentScanResult {
 export interface BluetoothDeviceStatus {
   id: string;
   name: string;
-  type: 'hearing-aid' | 'cochlear' | 'braille-display' | 'pulse-oximeter' | 'smart-cane';
+  type:
+    | 'hearing-aid'
+    | 'cochlear'
+    | 'braille-display'
+    | 'pulse-oximeter'
+    | 'smart-cane';
   connected: boolean;
   battery: number;
   activeMode: string;
@@ -62,7 +87,15 @@ export interface NavigationRoute {
   tactileSteps: {
     instruction: string;
     distanceMeters: number;
-    turnDirection: 'straight' | 'left' | 'right' | 'slight-left' | 'slight-right' | 'stairs-up' | 'stairs-down' | 'arrival';
+    turnDirection:
+      | 'straight'
+      | 'left'
+      | 'right'
+      | 'slight-left'
+      | 'slight-right'
+      | 'stairs-up'
+      | 'stairs-down'
+      | 'arrival';
     hapticPattern: number[];
     hazardWarning?: string;
   }[];
@@ -74,7 +107,12 @@ export interface VRVirtualWorld {
   nameHindi: string;
   category: 'transit' | 'nature' | 'urban' | 'cultural';
   description: string;
-  soundscapeType: 'metro' | 'airport' | 'garden' | 'market' | 'temple';
+  soundscapeType:
+    | 'metro'
+    | 'airport'
+    | 'garden'
+    | 'market'
+    | 'temple';
   steps: {
     title: string;
     audioNarration: string;

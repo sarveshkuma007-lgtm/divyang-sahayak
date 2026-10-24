@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Navigation,
   Headphones,
@@ -27,6 +27,40 @@ import { AiChatSearchModule } from './components/AiChatSearchModule';
 import { getTranslation } from './services/localization';
 import { triggerHaptic, HAPTIC_PATTERNS } from './services/haptics';
 import { parseVoiceIntent, speakText } from './services/speechService';
+import { askGeminiAssistant } from './services/geminiService';
+
+type AppTab =
+  | 'navigation'
+  | 'immersive-vr'
+  | 'currency'
+  | 'document'
+  | 'sign-lang'
+  | 'video-call'
+  | 'bluetooth'
+  | 'ai-search';
+
+const LANGUAGE_LOCALES: Record<string, string> = {
+  en: 'en-IN',
+  hi: 'hi-IN',
+  mr: 'mr-IN',
+  bn: 'bn-IN',
+  ta: 'ta-IN',
+  te: 'te-IN',
+  gu: 'gu-IN',
+  kn: 'kn-IN',
+  ml: 'ml-IN',
+  pa: 'pa-IN',
+  ur: 'ur-IN',
+  or: 'or-IN',
+  es: 'es-ES',
+};
+
+function getSpeechRecognitionConstructor(): any {
+  if (typeof window === 'undefined') return null;
+
+  const browser = window as any;
+  return browser.SpeechRecognition || browser.webkitSpeechRecognition || null;
+}
 
 export default function App() {
   const [settings, setSettings] = useState<SensorySettings>({
@@ -37,71 +71,291 @@ export default function App() {
     bionicReading: false,
     hapticFeedback: true,
     soundRadar: true,
-    voiceSpeed: 1.0,
+    voiceSpeed: 1,
     uiLanguage: 'hi',
   });
 
-  const [activeTab, setActiveTab] = useState<
-    | 'navigation'
-    | 'immersive-vr'
-    | 'currency'
-    | 'document'
-    | 'sign-lang'
-    | 'video-call'
-    | 'bluetooth'
-    | 'ai-search'
-  >('navigation');
-
+  const [activeTab, setActiveTab] = useState<AppTab>('navigation');
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [sosModalOpen, setSosModalOpen] = useState(false);
   const [bluetoothModalOpen, setBluetoothModalOpen] = useState(false);
 
   const [hearingAidConnected, setHearingAidConnected] = useState(true);
-  const [hearingAidBattery, setHearingAidBattery] = useState(88);
+  const [hearingAidBattery] = useState(88);
 
   const [isListening, setIsListening] = useState(false);
   const [detectedVoiceFeedback, setDetectedVoiceFeedback] =
     useState<string | undefined>();
+  const [assistantBusy, setAssistantBusy] = useState(false);
 
-  const speechRecognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const listeningRef = useRef(false);
+  const mountedRef = useRef(true);
+  const requestIdRef = useRef(0);
 
-  const t = (key: string) =>
-    getTranslation(settings.uiLanguage, key);
+  const t = (key: string) => getTranslation(settings.uiLanguage, key);
 
-  const handleUpdateSettings = (
-    partial: Partial<SensorySettings>
-  ) => {
-    setSettings((prev) => ({ ...prev, ...partial }));
+  const handleUpdateSettings = (partial: Partial<SensorySettings>) => {
+    setSettings((previous) => ({ ...previous, ...partial }));
   };
 
-  const handleToggleHearingAid = () => {
-    setHearingAidConnected((prev) => !prev);
-  };
+  const stopSpeaking = useCallback(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
 
-  const toggleListening = () => {
-    if (isListening) {
-      if (speechRecognitionRef.current) {
-        try {
-          speechRecognitionRef.current.stop();
-        } catch {
-          // Recognition may already have stopped.
-        }
+  const say = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+
+      speakText(text, settings.uiLanguage, settings.voiceSpeed);
+    },
+    [settings.uiLanguage, settings.voiceSpeed],
+  );
+
+  const stopListening = useCallback(() => {
+    listeningRef.current = false;
+    setIsListening(false);
+
+    const recognition = recognitionRef.current;
+    recognitionRef.current = null;
+
+    if (recognition) {
+      recognition.onresult = null;
+      recognition.onend = null;
+      recognition.onerror = null;
+
+      try {
+        recognition.stop();
+      } catch {
+        // It may already have stopped.
       }
+    }
+  }, []);
 
-      setIsListening(false);
-      setDetectedVoiceFeedback(undefined);
+  const readPage = useCallback(() => {
+    const main = document.querySelector('main');
+    const text = main?.textContent?.replace(/\s+/g, ' ').trim();
+
+    if (!text) {
+      say(
+        settings.uiLanguage === 'hi'
+          ? 'इस पेज पर पढ़ने के लिए कोई जानकारी नहीं है।'
+          : 'There is no page content available to read.',
+      );
       return;
     }
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
+    say(text);
+  }, [say, settings.uiLanguage]);
+
+  const processVoiceCommand = useCallback(
+    async (transcript: string) => {
+      const text = transcript.trim();
+      if (!text) return;
+
+      const lower = text.toLocaleLowerCase();
+
+      setDetectedVoiceFeedback(`Heard: "${text}"`);
+
+      // Stop commands should work without contacting Gemini.
+      if (
+        /^(stop|stop speaking|be quiet|cancel speech|रुको|बंद करो|चुप हो जाओ)$/i.test(
+          lower,
+        )
+      ) {
+        stopSpeaking();
+        say(settings.uiLanguage === 'hi' ? 'ठीक है।' : 'Stopped.');
+        return;
+      }
+
+      if (
+        lower.includes('read this page') ||
+        lower.includes('read the page') ||
+        lower.includes('read screen') ||
+        lower.includes('read everything') ||
+        lower.includes('पेज पढ़ो') ||
+        lower.includes('स्क्रीन पढ़ो')
+      ) {
+        readPage();
+        return;
+      }
+
+      if (
+        lower.includes('repeat that') ||
+        lower.includes('repeat answer') ||
+        lower.includes('फिर से बोलो')
+      ) {
+        readPage();
+        return;
+      }
+
+      const parsed = parseVoiceIntent(text);
+
+      // Handle explicit navigation commands locally.
+      // General questions are sent to Gemini below.
+      switch (parsed.intent) {
+        case 'SOS':
+          setSosModalOpen(true);
+          triggerHaptic(HAPTIC_PATTERNS.EMERGENCY_SOS);
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'आपातकालीन सहायता स्क्रीन खोल रहा हूँ।'
+              : 'Opening emergency assistance.',
+          );
+          return;
+
+        case 'CURRENCY':
+          setActiveTab('currency');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'मुद्रा पहचान स्क्रीन खोल रहा हूँ।'
+              : 'Opening the currency detector.',
+          );
+          return;
+
+        case 'DOCUMENT':
+          setActiveTab('document');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'दस्तावेज़ स्कैनर खोल रहा हूँ।'
+              : 'Opening the document scanner.',
+          );
+          return;
+
+        case 'SIGN_LANG':
+          setActiveTab('sign-lang');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'सांकेतिक भाषा अनुवादक खोल रहा हूँ।'
+              : 'Opening the sign language translator.',
+          );
+          return;
+
+        case 'CALL':
+          setActiveTab('video-call');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'कॉल स्क्रीन खोल रहा हूँ।'
+              : 'Opening messages and calls.',
+          );
+          return;
+
+        case 'NAVIGATE':
+          setActiveTab('navigation');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'नेविगेशन खोल रहा हूँ।'
+              : 'Opening navigation.',
+          );
+          return;
+
+        case 'THEME':
+          setSettingsModalOpen(true);
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'एक्सेसिबिलिटी सेटिंग्स खोल रहा हूँ।'
+              : 'Opening accessibility settings.',
+          );
+          return;
+
+        case 'SETTINGS':
+          setActiveTab('bluetooth');
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'डिवाइस सेटिंग्स खोल रहा हूँ।'
+              : 'Opening device settings.',
+          );
+          return;
+
+        case 'SEARCH':
+        case 'UNKNOWN':
+        default:
+          break;
+      }
+
+      // General questions go to Gemini instead of only opening AI Search.
+      const requestId = ++requestIdRef.current;
+      setAssistantBusy(true);
+
+      try {
+        const result = await askGeminiAssistant(
+          text,
+          settings.uiLanguage,
+          [
+            'You are the voice assistant for Divyang Sahayak, an accessibility app.',
+            `Reply in the user's selected language: ${settings.uiLanguage}.`,
+            'Answer the actual question directly and completely.',
+            'Use clear, natural sentences that sound good when read aloud.',
+            'For multi-step instructions, explain the steps instead of giving only a short acknowledgement.',
+            'Do not claim to have performed actions that you did not perform.',
+            'Keep the answer useful and avoid unnecessary markdown formatting.',
+          ].join(' '),
+        );
+
+        // Do not let an older request overwrite a newer one.
+        if (!mountedRef.current || requestId !== requestIdRef.current) {
+          return;
+        }
+
+        const answer = result.replyText?.trim();
+
+        if (!answer) {
+          say(
+            settings.uiLanguage === 'hi'
+              ? 'मुझे पूरा उत्तर नहीं मिला। कृपया दोबारा पूछें।'
+              : 'I did not receive an answer. Please try again.',
+          );
+          return;
+        }
+
+        // Read the complete returned answer aloud.
+        say(answer);
+        setDetectedVoiceFeedback(`Gemini: ${answer}`);
+      } catch (error) {
+        console.error('Gemini voice assistant failed:', error);
+
+        if (!mountedRef.current || requestId !== requestIdRef.current) {
+          return;
+        }
+
+        say(
+          settings.uiLanguage === 'hi'
+            ? 'AI सहायक से संपर्क नहीं हो पाया। इंटरनेट कनेक्शन और सर्वर जाँचें।'
+            : 'I could not connect to the AI assistant. Please check your internet connection and server.',
+        );
+      } finally {
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setAssistantBusy(false);
+        }
+      }
+    },
+    [
+      readPage,
+      say,
+      settings.uiLanguage,
+      stopSpeaking,
+    ],
+  );
+
+  const toggleListening = useCallback(() => {
+    if (listeningRef.current) {
+      stopListening();
+      setDetectedVoiceFeedback(undefined);
+      say(
+        settings.uiLanguage === 'hi'
+          ? 'वॉइस असिस्टेंट बंद है।'
+          : 'Voice assistant stopped listening.',
+      );
+      return;
+    }
+
+    const SpeechRecognition = getSpeechRecognitionConstructor();
 
     if (!SpeechRecognition) {
-      speakText(
-        'Voice recognition not supported in this browser. Please use on-screen controls.',
-        settings.uiLanguage,
-        settings.voiceSpeed
+      say(
+        'Voice recognition is not supported in this browser. Please use a supported browser or the on-screen controls.',
       );
       return;
     }
@@ -111,170 +365,118 @@ export default function App() {
 
       recognition.continuous = true;
       recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
       recognition.lang =
-        settings.uiLanguage === 'hi' ? 'hi-IN' : 'en-US';
+        LANGUAGE_LOCALES[settings.uiLanguage] || 'en-IN';
+
+      listeningRef.current = true;
+      recognitionRef.current = recognition;
+      setIsListening(true);
 
       recognition.onresult = (event: any) => {
-        const lastIdx = event.results.length - 1;
-        const transcript =
-          event.results[lastIdx][0].transcript;
+        const result = event.results?.[event.results.length - 1];
+        if (!result || !result.isFinal) return;
 
-        processVoiceCommand(transcript);
+        const transcript = result[0]?.transcript?.trim();
+        if (transcript) {
+          void processVoiceCommand(transcript);
+        }
       };
 
       recognition.onerror = (event: any) => {
-        console.warn('Speech recognition event:', event);
+        console.warn('Speech recognition error:', event.error);
+
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          stopListening();
+          setDetectedVoiceFeedback(
+            'Microphone permission is required. Allow microphone access in your browser settings.',
+          );
+        } else if (event.error === 'language-not-supported') {
+          setDetectedVoiceFeedback(
+            `Speech recognition may not support ${settings.uiLanguage} in this browser.`,
+          );
+        } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+          setDetectedVoiceFeedback(`Voice recognition error: ${event.error}`);
+        }
       };
 
       recognition.onend = () => {
-        if (isListening) {
+        // Keep listening across recognition sessions while the user
+        // has not explicitly switched the assistant off.
+        if (
+          listeningRef.current &&
+          recognitionRef.current === recognition
+        ) {
           try {
             recognition.start();
-          } catch {
-            // Ignore restart errors.
+          } catch (error) {
+            console.warn('Could not restart speech recognition:', error);
           }
+        } else if (recognitionRef.current === recognition) {
+          recognitionRef.current = null;
+          setIsListening(false);
         }
       };
 
       recognition.start();
-      speechRecognitionRef.current = recognition;
-      setIsListening(true);
-
       triggerHaptic(HAPTIC_PATTERNS.CLICK);
 
-      speakText(
+      say(
         settings.uiLanguage === 'hi'
-          ? 'आवाज सहायक सक्रिय है। बोलिए।'
-          : 'Voice assistant active. Speak any command.',
-        settings.uiLanguage,
-        settings.voiceSpeed
+          ? 'वॉइस असिस्टेंट चालू है। अपना सवाल पूछिए।'
+          : 'Voice assistant is on. Ask your question.',
       );
     } catch (error) {
-      console.warn('Could not start recognition', error);
+      console.error('Could not start speech recognition:', error);
+      stopListening();
+      say('Could not start the microphone. Check browser permissions and try again.');
     }
-  };
+  }, [
+    processVoiceCommand,
+    say,
+    settings.uiLanguage,
+    stopListening,
+  ]);
 
   useEffect(() => {
+    mountedRef.current = true;
+
     return () => {
-      if (speechRecognitionRef.current) {
+      mountedRef.current = false;
+      listeningRef.current = false;
+      requestIdRef.current++;
+
+      if (recognitionRef.current) {
         try {
-          speechRecognitionRef.current.stop();
+          recognitionRef.current.stop();
         } catch {
-          // Recognition may already have stopped.
+          // Ignore cleanup errors.
         }
+        recognitionRef.current = null;
+      }
+
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
       }
     };
   }, []);
 
-  const processVoiceCommand = (transcript: string) => {
-    const parsed = parseVoiceIntent(transcript);
-
-    if (
-      parsed.detectedLang &&
-      parsed.detectedLang !== settings.uiLanguage
-    ) {
-      handleUpdateSettings({
-        uiLanguage: parsed.detectedLang,
-      });
-    }
-
-    setDetectedVoiceFeedback(
-      `Heard: "${transcript}" · Switched to ${parsed.detectedLang.toUpperCase()}`
-    );
-
-    switch (parsed.intent) {
-      case 'SOS':
-        setSosModalOpen(true);
-        triggerHaptic(HAPTIC_PATTERNS.EMERGENCY_SOS);
-        break;
-
-      case 'CURRENCY':
-        setActiveTab('currency');
-        speakText(
-          parsed.detectedLang === 'hi'
-            ? 'मुद्रा पहचान कैमरा खोला जा रहा है।'
-            : 'Opening money detector.',
-          parsed.detectedLang,
-          settings.voiceSpeed
-        );
-        break;
-
-      case 'DOCUMENT':
-        setActiveTab('document');
-        speakText(
-          parsed.detectedLang === 'hi'
-            ? 'दस्तावेज स्कैनर खोला गया।'
-            : 'Opening document scanner.',
-          parsed.detectedLang,
-          settings.voiceSpeed
-        );
-        break;
-
-      case 'SIGN_LANG':
-        setActiveTab('sign-lang');
-        speakText(
-          parsed.detectedLang === 'hi'
-            ? 'सांकेतिक भाषा अनुवादक सक्रिय।'
-            : 'Opening sign language translator.',
-          parsed.detectedLang,
-          settings.voiceSpeed
-        );
-        break;
-
-      case 'CALL':
-        setActiveTab('video-call');
-        speakText(
-          parsed.detectedLang === 'hi'
-            ? 'मैसेज और कॉल स्क्रीन खोली जा रही है।'
-            : 'Opening messages and calls.',
-          parsed.detectedLang,
-          settings.voiceSpeed
-        );
-        break;
-
-      case 'NAVIGATE':
-        setActiveTab('navigation');
-        speakText(
-          parsed.detectedLang === 'hi'
-            ? 'नेविगेशन और रडार चालू है।'
-            : 'Opening navigation map.',
-          parsed.detectedLang,
-          settings.voiceSpeed
-        );
-        break;
-
-      case 'THEME':
-        setSettingsModalOpen(true);
-        break;
-
-      case 'SETTINGS':
-        setActiveTab('bluetooth');
-        break;
-
-      case 'SEARCH':
-      default:
-        setActiveTab('ai-search');
-        break;
-    }
+  const handleToggleHearingAid = () => {
+    setHearingAidConnected((previous) => !previous);
   };
 
   const getThemeClass = () => {
     switch (settings.theme) {
       case 'calm-forest':
         return 'bg-emerald-950 text-emerald-100';
-
       case 'warm-amber':
         return 'bg-amber-950 text-amber-100';
-
       case 'high-contrast-dark':
         return 'bg-black text-yellow-300';
-
       case 'high-contrast-light':
         return 'bg-slate-100 text-slate-900';
-
       case 'monochrome':
         return 'bg-neutral-950 text-neutral-200';
-
       case 'eye-comfort':
       default:
         return 'bg-slate-950 text-slate-100';
@@ -285,10 +487,8 @@ export default function App() {
     switch (settings.fontSize) {
       case 'large':
         return 'text-base';
-
       case 'extra-large':
         return 'text-lg';
-
       case 'standard':
       default:
         return 'text-sm';
@@ -296,50 +496,18 @@ export default function App() {
   };
 
   const tabs: {
-    id: typeof activeTab;
+    id: AppTab;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
-    {
-      id: 'navigation',
-      label: t('tabNavigation'),
-      icon: Navigation,
-    },
-    {
-      id: 'immersive-vr',
-      label: t('tabImmersiveVR'),
-      icon: Headphones,
-    },
-    {
-      id: 'currency',
-      label: t('tabCurrency'),
-      icon: Banknote,
-    },
-    {
-      id: 'document',
-      label: t('tabDocument'),
-      icon: FileText,
-    },
-    {
-      id: 'sign-lang',
-      label: t('tabSignLang'),
-      icon: Hand,
-    },
-    {
-      id: 'video-call',
-      label: 'Messages & Calls',
-      icon: Video,
-    },
-    {
-      id: 'bluetooth',
-      label: t('tabBluetooth'),
-      icon: Bluetooth,
-    },
-    {
-      id: 'ai-search',
-      label: t('tabAiSearch'),
-      icon: Search,
-    },
+    { id: 'navigation', label: t('tabNavigation'), icon: Navigation },
+    { id: 'immersive-vr', label: t('tabImmersiveVR'), icon: Headphones },
+    { id: 'currency', label: t('tabCurrency'), icon: Banknote },
+    { id: 'document', label: t('tabDocument'), icon: FileText },
+    { id: 'sign-lang', label: t('tabSignLang'), icon: Hand },
+    { id: 'video-call', label: 'Messages & Calls', icon: Video },
+    { id: 'bluetooth', label: t('tabBluetooth'), icon: Bluetooth },
+    { id: 'ai-search', label: t('tabAiSearch'), icon: Search },
   ];
 
   return (
@@ -355,10 +523,18 @@ export default function App() {
         onTriggerSOS={() => setSosModalOpen(true)}
         isListening={isListening}
         onToggleListening={toggleListening}
-        detectedLangText={detectedVoiceFeedback}
-        onSelectLanguage={(lang) =>
-          handleUpdateSettings({ uiLanguage: lang })
+        detectedLangText={
+          assistantBusy
+            ? 'Gemini is preparing your answer…'
+            : detectedVoiceFeedback
         }
+        onSelectLanguage={(lang) => {
+          handleUpdateSettings({ uiLanguage: lang });
+          if (recognitionRef.current && listeningRef.current) {
+            stopListening();
+            say('Language changed. Turn the voice assistant on again to use the new recognition language.');
+          }
+        }}
         hearingAidConnected={hearingAidConnected}
         hearingAidBattery={hearingAidBattery}
       />
@@ -415,9 +591,7 @@ export default function App() {
           <DocumentScannerModule
             settings={settings}
             hearingAidConnected={hearingAidConnected}
-            onOpenBluetoothModal={() =>
-              setBluetoothModalOpen(true)
-            }
+            onOpenBluetoothModal={() => setBluetoothModalOpen(true)}
           />
         )}
 
@@ -451,11 +625,9 @@ export default function App() {
                 tab === 'document' ||
                 tab === 'videocall'
               ) {
-                if (tab === 'videocall') {
-                  setActiveTab('video-call');
-                } else {
-                  setActiveTab(tab as any);
-                }
+                setActiveTab(
+                  tab === 'videocall' ? 'video-call' : tab,
+                );
               }
             }}
           />
@@ -480,7 +652,7 @@ export default function App() {
 
       {bluetoothModalOpen && (
         <SensoryControlsModal
-          isOpen={true}
+          isOpen
           onClose={() => setBluetoothModalOpen(false)}
           settings={settings}
           onUpdateSettings={handleUpdateSettings}
