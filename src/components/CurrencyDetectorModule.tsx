@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Banknote, 
   Camera, 
@@ -22,32 +23,32 @@ interface CurrencyDetectorModuleProps {
 
 const SAMPLE_NOTES = [
   {
-    denomination: '₹500 (Five Hundred Indian Rupees)',
-    denominationHindi: 'पाँच सौ रुपये का नया नोट',
+    denomination: 'â‚¹500 (Five Hundred Indian Rupees)',
+    denominationHindi: 'à¤ªà¤¾à¤à¤š à¤¸à¥Œ à¤°à¥à¤ªà¤¯à¥‡ à¤•à¤¾ à¤¨à¤¯à¤¾ à¤¨à¥‹à¤Ÿ',
     color: 'Stone Gray',
     features: 'Red Fort motif on reverse, Swachh Bharat logo, Bleed lines on edge for tactile feel.',
   },
   {
-    denomination: '₹200 (Two Hundred Indian Rupees)',
-    denominationHindi: 'दो सौ रुपये का नोट',
+    denomination: 'â‚¹200 (Two Hundred Indian Rupees)',
+    denominationHindi: 'à¤¦à¥‹ à¤¸à¥Œ à¤°à¥à¤ªà¤¯à¥‡ à¤•à¤¾ à¤¨à¥‹à¤Ÿ',
     color: 'Bright Yellow',
     features: 'Sanchi Stupa motif, H-symbol tactile mark for visually impaired.',
   },
   {
-    denomination: '₹100 (One Hundred Indian Rupees)',
-    denominationHindi: 'एक सौ रुपये का नोट',
+    denomination: 'â‚¹100 (One Hundred Indian Rupees)',
+    denominationHindi: 'à¤à¤• à¤¸à¥Œ à¤°à¥à¤ªà¤¯à¥‡ à¤•à¤¾ à¤¨à¥‹à¤Ÿ',
     color: 'Lavender',
     features: 'Rani ki Vav motif, 4 bleed lines on both edges for tactile identification.',
   },
   {
-    denomination: '₹50 (Fifty Indian Rupees)',
-    denominationHindi: 'पचास रुपये का नोट',
+    denomination: 'â‚¹50 (Fifty Indian Rupees)',
+    denominationHindi: 'à¤ªà¤šà¤¾à¤¸ à¤°à¥à¤ªà¤¯à¥‡ à¤•à¤¾ à¤¨à¥‹à¤Ÿ',
     color: 'Fluorescent Blue',
     features: 'Hampi with Chariot motif, Ashoka Pillar emblem on right.',
   },
   {
     denomination: '$20 (Twenty US Dollars)',
-    denominationHindi: 'बीस अमेरिकी डॉलर',
+    denominationHindi: 'à¤¬à¥€à¤¸ à¤…à¤®à¥‡à¤°à¤¿à¤•à¥€ à¤¡à¥‰à¤²à¤°',
     color: 'Green / Peach',
     features: 'Andrew Jackson portrait, metallic green 20 in lower right.',
   },
@@ -56,12 +57,16 @@ const SAMPLE_NOTES = [
 export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ settings }) => {
   const [cameraActive, setCameraActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  // Start with no result. Never show a denomination until a frame was analyzed
+  // or the user explicitly chooses a demo banknote.
   const [detectedNote, setDetectedNote] = useState<DetectedCurrency>({
-    found: true,
-    denomination: '₹500 (Five Hundred Indian Rupees)',
-    confidence: 0.98,
-    noteCondition: 'Crisp, genuine note in good condition',
+    found: false,
+    denomination: '',
+    confidence: 0,
+    noteCondition: '',
   });
+  const [statusMessage, setStatusMessage] = useState('Camera is off. Start the camera or choose a demo banknote.');
+  const [isDemoResult, setIsDemoResult] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -69,99 +74,148 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
 
   const t = (key: string) => getTranslation(settings.uiLanguage, key);
 
+  // The video element only exists after cameraActive becomes true.
+  // Attach the stream in an effect after React has mounted that element.
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!cameraActive || !video || !stream) return;
+
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+
+    video.play().catch((err) => {
+      console.warn('Could not start camera preview:', err);
+      setStatusMessage('Camera permission is granted, but the preview could not start. Close and reopen the camera.');
+    });
+
+    return () => {
+      // Do not stop tracks here; toggleCamera handles the stream lifecycle.
+      if (video.srcObject === stream) video.srcObject = null;
+    };
+  }, [cameraActive]);
+
   const toggleCamera = async () => {
     if (cameraActive) {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
       }
+      if (videoRef.current) videoRef.current.srcObject = null;
       setCameraActive(false);
+      setDetectedNote({ found: false, denomination: '', confidence: 0, noteCondition: '' });
+      setIsDemoResult(false);
+      setStatusMessage('Camera is off. Start the camera or choose a demo banknote.');
       triggerHaptic(HAPTIC_PATTERNS.CLICK);
     } else {
       try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          setStatusMessage('Camera is not available in this browser. Use HTTPS or localhost and try again.');
+          return;
+        }
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
           audio: false,
         });
         streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
+        // This causes React to render the <video>; useEffect attaches the stream.
         setCameraActive(true);
+        setStatusMessage('Camera ready. Place one banknote inside the frame, then select Analyze.');
+        setDetectedNote({ found: false, denomination: '', confidence: 0, noteCondition: '' });
+        setIsDemoResult(false);
         triggerHaptic(HAPTIC_PATTERNS.SUCCESS);
-        speakText('Currency camera ready. Hold any banknote in front of the lens.', settings.uiLanguage, settings.voiceSpeed);
+        speakText('Currency camera ready. Hold one banknote in front of the lens, then analyze it.', settings.uiLanguage, settings.voiceSpeed);
       } catch (err) {
         console.warn('Camera stream error', err);
-        setCameraActive(true);
+        setCameraActive(false);
+        setStatusMessage('Could not open camera. Allow camera permission in your browser and try again.');
       }
     }
   };
 
   const scanLiveFrame = async () => {
+    if (!cameraActive || !videoRef.current || !canvasRef.current || !streamRef.current) {
+      setStatusMessage('Camera is off. Start the camera before analyzing a physical banknote.');
+      speakText(
+        settings.uiLanguage === 'hi' ? 'पहले कैमरा चालू करें।' : 'Please start the camera before analyzing a physical banknote.',
+        settings.uiLanguage,
+        settings.voiceSpeed
+      );
+      return;
+    }
+
+    if (videoRef.current.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+        videoRef.current.videoWidth === 0 || videoRef.current.videoHeight === 0) {
+      setStatusMessage('Waiting for camera video. Keep the camera open and try again in a moment.');
+      return;
+    }
+
     setAnalyzing(true);
+    setStatusMessage('Analyzing the current camera frame…');
     triggerHaptic(HAPTIC_PATTERNS.CLICK);
 
     let base64Image = '';
-    if (canvasRef.current && videoRef.current && cameraActive) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        canvas.width = 480;
-        canvas.height = 360;
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-        base64Image = canvas.toDataURL('image/jpeg', 0.7);
-      }
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+      base64Image = canvas.toDataURL('image/jpeg', 0.85);
     }
 
     try {
       if (base64Image) {
-        const res = await analyzeSceneVision(base64Image, 'currency', settings.uiLanguage === 'hi' ? 'Hindi' : 'English');
-        if (res.detectedCurrency && res.detectedCurrency.found) {
+        const res = await analyzeSceneVision(base64Image, 'currency', settings.uiLanguage=== 'hi' ? 'Hindi' : 'English');
+        if (res.detectedCurrency && res.detectedCurrency.found && res.detectedCurrency.denomination) {
           setDetectedNote(res.detectedCurrency);
+          setIsDemoResult(false);
+          setStatusMessage('Analysis returned a possible denomination. Verify it manually; this is not an authenticity guarantee.');
           triggerHaptic(HAPTIC_PATTERNS.CURRENCY_DETECTED);
           const speech = settings.uiLanguage === 'hi' 
-            ? `${res.detectedCurrency.denomination} पहचाना गया।`
+            ? `${res.detectedCurrency.denomination} à¤ªà¤¹à¤šà¤¾à¤¨à¤¾ à¤—à¤¯à¤¾à¥¤`
             : `${res.detectedCurrency.denomination} detected.`;
           speakText(speech, settings.uiLanguage, settings.voiceSpeed);
         } else {
+          setDetectedNote({ found: false, denomination: '', confidence: 0, noteCondition: '' });
+          setIsDemoResult(false);
+          setStatusMessage('No clear banknote was detected. Improve lighting, hold the note steady, and try again.');
           speakText(
-            settings.uiLanguage === 'hi' ? 'कोई नोट स्पष्ट नहीं दिखा। कृपया पुनः प्रयास करें।' : 'No banknote clearly visible. Please adjust lighting.',
+            settings.uiLanguage === 'hi'
+              ? 'कोई नोट स्पष्ट नहीं दिखा। रोशनी सुधारें और फिर कोशिश करें।'
+              : 'No banknote was clearly detected. Improve lighting and try again.',
             settings.uiLanguage,
             settings.voiceSpeed
           );
         }
       } else {
-        // Sample cycling if camera isn't transmitting
-        const randomNote = SAMPLE_NOTES[Math.floor(Math.random() * SAMPLE_NOTES.length)];
-        const result: DetectedCurrency = {
-          found: true,
-          denomination: randomNote.denomination,
-          confidence: 0.96,
-          noteCondition: randomNote.features,
-        };
-        setDetectedNote(result);
-        triggerHaptic(HAPTIC_PATTERNS.CURRENCY_DETECTED);
-        const speech = settings.uiLanguage === 'hi' ? `${randomNote.denominationHindi} पहचाना गया।` : `${randomNote.denomination} detected.`;
-        speakText(speech, settings.uiLanguage, settings.voiceSpeed);
+        setStatusMessage('Could not capture a camera frame. Please try again.');
       }
     } catch (e) {
-      console.error(e);
+      console.error('Currency analysis failed:', e);
+      setStatusMessage('Analysis failed. Check your connection and vision service configuration, then try again.');
+      speakText(
+        settings.uiLanguage === 'hi' ? 'विश्लेषण नहीं हो पाया। कृपया फिर कोशिश करें।' : 'Analysis failed. Please try again.',
+        settings.uiLanguage,
+        settings.voiceSpeed
+      );
     } finally {
       setAnalyzing(false);
     }
   };
 
   const selectSampleNote = (note: typeof SAMPLE_NOTES[0]) => {
-    triggerHaptic(HAPTIC_PATTERNS.CURRENCY_DETECTED);
+    setIsDemoResult(true);
+    setStatusMessage('Demo result only. This is a sample announcement, not a camera detection.');
     setDetectedNote({
       found: true,
       denomination: note.denomination,
-      confidence: 0.99,
+      confidence: 0,
       noteCondition: note.features,
     });
     const speech = settings.uiLanguage === 'hi' 
-      ? `${note.denominationHindi} पहचाना गया। ${note.features}`
+      ? `${note.denominationHindi} à¤ªà¤¹à¤šà¤¾à¤¨à¤¾ à¤—à¤¯à¤¾à¥¤ ${note.features}`
       : `${note.denomination} detected. ${note.features}`;
     speakText(speech, settings.uiLanguage, settings.voiceSpeed);
   };
@@ -191,7 +245,7 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
               : 'bg-emerald-600 hover:bg-emerald-500 text-white border-transparent'
           }`}
         >
-          {cameraActive ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
+          {cameraActive ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4"/>}
           <span>{cameraActive ? 'Close Camera' : 'Open Currency Camera'}</span>
         </button>
       </div>
@@ -219,7 +273,7 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
                       PLACE BANKNOTE WITHIN FRAME
                     </span>
                     <span className="text-[10px] text-white bg-slate-900/80 px-2 py-0.5 rounded">
-                      Detects ₹10, ₹20, ₹50, ₹100, ₹200, ₹500, USD
+                      Detects â‚¹10, â‚¹20, â‚¹50, â‚¹100, â‚¹200, â‚¹500, USD
                     </span>
                   </div>
                 </div>
@@ -246,7 +300,7 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
           {/* Action Trigger */}
           <button
             onClick={scanLiveFrame}
-            disabled={analyzing}
+            disabled={analyzing || !cameraActive}
             className="w-full py-3 px-4 text-xs sm:text-sm font-bold rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950 flex items-center justify-center gap-2 transition-transform active:scale-95 disabled:opacity-50"
           >
             <Zap className="w-4 h-4 fill-slate-950" />
@@ -260,25 +314,31 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
           {/* Detected Note Presentation Card */}
           <div className="p-5 rounded-2xl bg-slate-800/60 border border-emerald-500/40 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-700/60 pb-3">
-              <span className="text-xs font-mono text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4" />
-                Detection Verified
+              <span className={`text-xs font-mono uppercase tracking-wider flex items-center gap-1.5 ${detectedNote.found ? 'text-emerald-400' : 'text-amber-300'}`}>
+                {detectedNote.found ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                {isDemoResult ? 'Demo Result' : detectedNote.found ? 'Possible Detection' : 'No Detection Yet'}
               </span>
-              <span className="text-xs font-mono text-slate-300">
-                Confidence: {(detectedNote.confidence * 100).toFixed(0)}%
-              </span>
+              {detectedNote.found && !isDemoResult && (
+                <span className="text-xs font-mono text-slate-300">
+                  Model confidence: {typeof detectedNote.confidence === 'number' ? `${(detectedNote.confidence * 100).toFixed(0)}%` : 'Not provided'}
+                </span>
+              )}
             </div>
 
             <div className="space-y-1">
               <span className="text-[11px] text-slate-400 uppercase font-semibold">Identified Denomination</span>
               <h3 className="text-lg sm:text-xl font-extrabold text-white">
-                {detectedNote.denomination}
+                {detectedNote.found && detectedNote.denomination ? detectedNote.denomination : 'No banknote analyzed'}
               </h3>
+              <p className="text-xs text-slate-400">{statusMessage}</p>
+              {detectedNote.found && !isDemoResult && (
+                <p className="text-[11px] text-amber-300">AI output can be wrong. This does not verify genuineness or detect counterfeit notes reliably.</p>
+              )}
             </div>
 
-            {detectedNote.noteCondition && (
+            {detectedNote.found && detectedNote.noteCondition && (
               <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-300 space-y-1">
-                <span className="font-semibold text-emerald-300 block">Tactile & Security Features:</span>
+                <span className="font-semibold text-emerald-300 block">Tactile & SecurityFeatures:</span>
                 <p className="text-[11px] text-slate-400">{detectedNote.noteCondition}</p>
               </div>
             )}
@@ -286,10 +346,12 @@ export const CurrencyDetectorModule: React.FC<CurrencyDetectorModuleProps> = ({ 
             {/* Read Aloud & Vibration Pulse Buttons */}
             <div className="grid grid-cols-2 gap-2 pt-2">
               <button
+                disabled={!detectedNote.found || !detectedNote.denomination}
                 onClick={() => {
-                  const msg = settings.uiLanguage === 'hi' 
+                  if (!detectedNote.found || !detectedNote.denomination) return;
+                  const msg = settings.uiLanguage === 'hi'
                     ? `${detectedNote.denomination} पहचाना गया।`
-                    : `${detectedNote.denomination} detected.`;
+                    : `${detectedNote.denomination}. ${isDemoResult ? 'This is a demo result.' : 'This is an AI estimate, not an authenticity check.'}`;
                   speakText(msg, settings.uiLanguage, settings.voiceSpeed);
                 }}
                 className="py-2 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
