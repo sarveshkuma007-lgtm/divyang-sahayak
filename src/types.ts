@@ -1,4 +1,3 @@
-
 export type AccessibilityProfile =
   | 'deaf'
   | 'mute'
@@ -9,6 +8,7 @@ export type AccessibilityProfile =
 export type SupportedLanguage =
   | 'en'
   | 'hi'
+  | 'es'
   | 'mr'
   | 'bn'
   | 'ta'
@@ -21,22 +21,22 @@ export type SupportedLanguage =
   | 'or';
 
 export type SensoryTheme =
-  | 'eye-comfort' // Gentle soothing blue-slate, non-irritating for deaf/sensory sensitivity
-  | 'calm-forest' // Soft sage green, low eye strain
-  | 'warm-amber' // Gentle warm sepia
-  | 'high-contrast-dark' // Pure black with high-visibility gold/cyan
-  | 'high-contrast-light' // Crisp white/dark navy
-  | 'monochrome'; // Pure grayscale for photophobia
+  | 'eye-comfort'
+  | 'calm-forest'
+  | 'warm-amber'
+  | 'high-contrast-dark'
+  | 'high-contrast-light'
+  | 'monochrome';
 
 export interface SensorySettings {
   theme: SensoryTheme;
-  brightness: number; // 70% to 130%
-  contrast: number; // 80% to 150%
+  brightness: number;
+  contrast: number;
   fontSize: 'standard' | 'large' | 'extra-large';
   bionicReading: boolean;
   hapticFeedback: boolean;
   soundRadar: boolean;
-  voiceSpeed: number; // 0.8 to 1.5
+  voiceSpeed: number;
   uiLanguage: SupportedLanguage;
 }
 

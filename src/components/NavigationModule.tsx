@@ -242,6 +242,32 @@ const NavigationModule: React.FC<NavigationModuleProps> = ({
     }
   };
 
+  // Automatically request camera access whenever the navigation module opens.
+  // The browser will still require the user to grant camera permission.
+  useEffect(() => {
+    let cancelled = false;
+
+    const startCameraOnOpen = async () => {
+      // Let React finish mounting before requesting the camera.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+
+      if (cancelled) return;
+      if (streamRef.current || cameraActive) return;
+
+      await toggleCamera();
+    };
+
+    void startCameraOnOpen();
+
+    return () => {
+      cancelled = true;
+    };
+    // This effect intentionally runs only when the module mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleScanObstaclesWithAI = async (automatic = false) => {
     if (scanInFlightRef.current) return;
     const video = videoRef.current;

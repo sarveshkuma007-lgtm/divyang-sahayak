@@ -255,6 +255,29 @@ export const SignLanguageModule: React.FC<SignLanguageModuleProps> = ({
     }
   };
 
+  // Automatically start the camera when the sign-language module opens.
+  useEffect(() => {
+    let cancelled = false;
+
+    const startCameraAutomatically = async () => {
+      // Wait for React to attach the video element before requesting the camera.
+      await new Promise<void>(resolve => {
+        requestAnimationFrame(() => resolve());
+      });
+
+      if (cancelled || !mountedRef.current) return;
+      if (cameraActiveRef.current) return;
+
+      await toggleCamera();
+    };
+
+    void startCameraAutomatically();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const captureFrame = (): string | null => {
     const video = videoRef.current;
 
