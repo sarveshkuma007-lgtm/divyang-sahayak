@@ -215,7 +215,7 @@ export default function App() {
 
       // Return to the main dashboard.
       if (
-        /^(go home|open home|dashboard|show dashboard|मुख्य पेज|होम खोलो)$/.test(
+        /(go home|open home|dashboard|show dashboard|मुख्य पेज|होम खोलो)/.test(
           lower,
         )
       ) {
@@ -229,7 +229,7 @@ export default function App() {
 
       // Navigation.
       if (
-        /^(open navigation|start navigation|navigate|नेविगेशन खोलो)$/.test(
+        /(open navigation|navigation|start navigation|navigate|नेविगेशन खोलो)/.test(
           lower,
         )
       ) {
@@ -243,7 +243,7 @@ export default function App() {
 
       // Sign language.
       if (
-        /^(open sign language|sign language|open isl|सांकेतिक भाषा खोलो)$/.test(
+        /(open sign language|sign language|open isl|सांकेतिक भाषा खोलो)/.test(
           lower,
         )
       ) {
@@ -257,7 +257,7 @@ export default function App() {
 
       // Document reader.
       if (
-        /^(read document|open document|open documents|document reader|दस्तावेज़ पढ़ो)$/.test(
+        /(read document|open document|open documents|document reader|read the document|दस्तावेज़ पढ़ो)/.test(
           lower,
         )
       ) {
@@ -271,7 +271,7 @@ export default function App() {
 
       // Currency detector.
       if (
-        /^(detect currency|open currency|currency detector|मुद्रा पहचानो)$/.test(
+        /(detect currency|open currency|currency detector|detect the currency|मुद्रा पहचानो)/.test(
           lower,
         )
       ) {
@@ -285,7 +285,7 @@ export default function App() {
 
       // Calls and messages.
       if (
-        /^(open calls|open messages|make a call|open phone|कॉल खोलो)$/.test(
+        /(open calls|open messages|make a call|open phone|calls|कॉल खोलो)/.test(
           lower,
         )
       ) {
@@ -299,7 +299,7 @@ export default function App() {
 
       // AI assistant.
       if (
-        /^(open ai|open assistant|ask assistant|ai assistant)$/.test(
+        /(open ai|open assistant|ask assistant|ai assistant)/.test(
           lower,
         )
       ) {
@@ -313,7 +313,7 @@ export default function App() {
 
       // Bluetooth and connected devices.
       if (
-        /^(open devices|bluetooth|device settings|कनेक्टेड डिवाइस खोलो)$/.test(
+        /(open devices|bluetooth|device settings|कनेक्टेड डिवाइस खोलो)/.test(
           lower,
         )
       ) {
@@ -327,7 +327,7 @@ export default function App() {
 
       // Accessibility settings.
       if (
-        /^(open settings|accessibility settings|change settings|सेटिंग खोलो)$/.test(
+        /(open settings|accessibility settings|change settings|सेटिंग खोलो)/.test(
           lower,
         )
       ) {
@@ -342,7 +342,7 @@ export default function App() {
 
       // Emergency support.
       if (
-        /^(emergency help|help me|sos|आपातकालीन सहायता)$/.test(
+        /(emergency help|help me|sos|आपातकालीन सहायता)/.test(
           lower,
         )
       ) {
@@ -532,8 +532,7 @@ export default function App() {
       recognition.continuous = true;
       recognition.interimResults = false;
       recognition.maxAlternatives = 1;
-      recognition.lang =
-        LANGUAGE_LOCALES[settings.uiLanguage] || 'en-IN';
+      recognition.lang = 'en-IN'; // The visible quick-command phrases are English.
 
       listeningRef.current = true;
       recognitionRef.current = recognition;
