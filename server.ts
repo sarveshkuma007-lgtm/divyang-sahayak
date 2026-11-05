@@ -25,11 +25,15 @@ const allowedOrigins = new Set([
   'http://localhost',
   'http://localhost:3000',
   'http://localhost:5173',
+  ...(process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean),
 ]);
 
 app.use((req: Request, res: Response, next) => {
   const origin = req.headers.origin;
-  if (origin && (allowedOrigins.has(origin) || origin.endsWith('.onrender.com'))) {
+  if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
