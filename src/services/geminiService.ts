@@ -1,10 +1,7 @@
 
 /**
- * Divyang Sahayak
+ * Divyora
  * Frontend services for the Express + Gemini backend.
- *
- * Keeps existing assistant, scene analysis, document scanning,
- * and sign-language translation APIs.
  */
 
 import {
@@ -48,11 +45,19 @@ export interface SignTranslateResponse {
   simpleExplanation: string;
 }
 
+// Render backend URL
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ||
+  'https://divyang-sahayak-1uwi.onrender.com'
+).replace(/\/+$/, '');
+
 async function postJson<T>(
-  url: string,
+  path: string,
   payload: unknown,
   operation: string,
 ): Promise<T> {
+  const url = `${API_BASE_URL}${path}`;
+
   let response: Response;
 
   try {
@@ -70,53 +75,24 @@ async function postJson<T>(
     console.error(`[${operation}] Network error:`, message);
 
     throw new Error(
-      `${operation}: network request failed: ${message}`,
+      `${operation}: Could not connect to the backend. Check internet connection and Render server. ${message}`,
     );
   }
 
   if (!response.ok) {
-    let details = '';
+    const details = await response.text().catch(
+      () => 'Could not read server response.',
+    );
 
-    try {
-      const body = await response.text();
-
-      if (body) {
-        try {
-          const parsed: unknown = JSON.parse(body);
-
-          if (parsed && typeof parsed === 'object') {
-            const value = parsed as Record<string, unknown>;
-
-            details =
-              (typeof value.details === 'string' && value.details) ||
-              (typeof value.error === 'string' && value.error) ||
-              (typeof value.message === 'string' && value.message) ||
-              body;
-          } else {
-            details = body;
-          }
-        } catch {
-          details = body;
-        }
-      }
-    } catch {
-      details = 'Could not read the server error response.';
-    }
-
-    const message =
-      `${operation} failed (HTTP ${response.status} ${response.statusText})` +
-      (details ? `: ${details.slice(0, 1200)}` : '');
-
-    console.error(`[${operation}]`, message);
-    throw new Error(message);
+    throw new Error(
+      `${operation} failed (HTTP ${response.status}): ${details.slice(0, 1200)}`,
+    );
   }
 
   try {
     return (await response.json()) as T;
   } catch {
-    throw new Error(
-      `${operation}: server returned invalid JSON.`,
-    );
+    throw new Error(`${operation}: server returned invalid JSON.`);
   }
 }
 
@@ -124,7 +100,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
   }
-
   return value as Record<string, unknown>;
 }
 
@@ -142,22 +117,18 @@ function normalizeGestureDetails(value: unknown): GestureDetail[] {
         typeof item === 'object' &&
         !Array.isArray(item),
     )
-    .map(item => {
-      const duration = item.durationMs;
-
-      return {
-        gloss: stringValue(item.gloss),
-        handshape: stringValue(item.handshape),
-        movement: stringValue(item.movement),
-        facialExpression: stringValue(item.facialExpression),
-        durationMs:
-          typeof duration === 'number' &&
-          Number.isFinite(duration) &&
-          duration >= 0
-            ? Math.min(duration, 60000)
-            : 0,
-      };
-    })
+    .map(item => ({
+      gloss: stringValue(item.gloss),
+      handshape: stringValue(item.handshape),
+      movement: stringValue(item.movement),
+      facialExpression: stringValue(item.facialExpression),
+      durationMs:
+        typeof item.durationMs === 'number' &&
+        Number.isFinite(item.durationMs) &&
+        item.durationMs >= 0
+          ? Math.min(item.durationMs, 60000)
+          : 0,
+    }))
     .filter(item => item.gloss.length > 0)
     .slice(0, 100);
 }
@@ -167,17 +138,11 @@ export async function askGeminiAssistant(
   detectedLanguage?: string,
   context?: string,
 ): Promise<AssistantResponse> {
-  if (!message.trim()) {
-    throw new Error('Please enter a message.');
-  }
+  if (!message.trim()) throw new Error('Please enter a message.');
 
   return postJson<AssistantResponse>(
     '/api/gemini/assist',
-    {
-      message,
-      detectedLanguage,
-      context,
-    },
+    { message, detectedLanguage, context },
     'AI assistant',
   );
 }
@@ -193,11 +158,7 @@ export async function analyzeSceneVision(
 
   return postJson<SceneAnalysisResponse>(
     '/api/gemini/analyze-scene',
-    {
-      imageBase64,
-      mode,
-      preferredLanguage,
-    },
+    { imageBase64, mode, preferredLanguage },
     'Scene analysis',
   );
 }
@@ -212,20 +173,11 @@ export async function analyzeDocumentVision(
 
   return postJson<DocumentScanResult>(
     '/api/gemini/analyze-document',
-    {
-      imageBase64,
-      userLanguage,
-    },
+    { imageBase64, userLanguage },
     'Document scanning',
   );
 }
 
-/**
- * Requests a proposed sign-language sequence from the backend.
- *
- * The response contains gloss tokens and optional gesture descriptions.
- * It is not itself a video, avatar, or verified ISL translation.
- */
 export async function translateToSignLanguage(
   text: string,
   targetDialect = 'ISL',
@@ -233,23 +185,16 @@ export async function translateToSignLanguage(
   const normalizedText = text.trim();
 
   if (!normalizedText) {
-    throw new Error(
-      'Text is required for sign-language translation.',
-    );
+    throw new Error('Text is required for sign-language translation.');
   }
 
   if (normalizedText.length > 1000) {
-    throw new Error(
-      'Please keep the sentence under 1000 characters.',
-    );
+    throw new Error('Please keep the sentence under 1000 characters.');
   }
 
   const raw = await postJson<unknown>(
     '/api/gemini/sign-translate',
-    {
-      text: normalizedText,
-      targetDialect,
-    },
+    { text: normalizedText, targetDialect },
     'Sign-language translation',
   );
 
@@ -265,17 +210,10 @@ export async function translateToSignLanguage(
         .slice(0, 100)
     : [];
 
-  const gestureDetails = normalizeGestureDetails(
-    result.gestureDetails,
-  );
-
   return {
-    originalText: stringValue(
-      result.originalText,
-      normalizedText,
-    ),
+    originalText: stringValue(result.originalText, normalizedText),
     signGloss,
-    gestureDetails,
+    gestureDetails: normalizeGestureDetails(result.gestureDetails),
     simpleExplanation: stringValue(
       result.simpleExplanation,
       'AI-generated sign descriptions may need review by an ISL-fluent person.',
