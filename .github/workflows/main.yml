@@ -1,8 +1,11 @@
 
-name: Build Divyang Sahayak APK
+name: Build Divyora APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -47,5 +50,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Divyang-Sahayak-APK
+          name: Divyora-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
