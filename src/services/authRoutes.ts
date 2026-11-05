@@ -15,12 +15,22 @@ const router = Router();
    CONFIGURATION
    ========================================================= */
 
-const RP_NAME = 'Divyang Sahayak';
+const RP_NAME = 'Divyora';
 
-const RP_ID = process.env.WEBAUTHN_RP_ID || 'localhost';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const DEPLOYED_HOST =
+  process.env.RENDER_EXTERNAL_HOSTNAME || 'divyang-sahayak-1uwi.onrender.com';
+
+// Passkeys are bound to the website hostname. Override these values in Render
+// if the public website domain changes. Native Capacitor app passkeys require
+// Android Digital Asset Links and are not enabled by these web settings alone.
+const RP_ID =
+  process.env.WEBAUTHN_RP_ID ||
+  (IS_PRODUCTION ? DEPLOYED_HOST : 'localhost');
 
 const EXPECTED_ORIGIN =
-  process.env.WEBAUTHN_ORIGIN || 'http://localhost:3000';
+  process.env.WEBAUTHN_ORIGIN ||
+  (IS_PRODUCTION ? `https://${DEPLOYED_HOST}` : 'http://localhost:3000');
 
 const ACCOUNT_EMAIL = (process.env.APP_LOGIN_EMAIL || '')
   .trim()
