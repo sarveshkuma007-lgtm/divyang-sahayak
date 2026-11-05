@@ -17,6 +17,34 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// Allow the deployed web app and the Capacitor Android WebView to call this API.
+const allowedOrigins = new Set([
+  'https://divyang-sahayak-1uwi.onrender.com',
+  'capacitor://localhost',
+  'https://localhost',
+  'http://localhost',
+  'http://localhost:3000',
+  'http://localhost:5173',
+]);
+
+app.use((req: Request, res: Response, next) => {
+  const origin = req.headers.origin;
+  if (origin && (allowedOrigins.has(origin) || origin.endsWith('.onrender.com'))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Enrollment-Token');
+  }
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 app.use(express.json({ limit: '20mb' }));
@@ -169,6 +197,11 @@ app.post('/api/gemini/assist', async (req: Request, res: Response) => {
 
     const { message, detectedLanguage, context } = req.body;
 
+    if (!apiKey) {
+      res.status(503).json({ error: 'Gemini API key is not configured on the server. Set GEMINI_API_KEY in Render.' });
+      return;
+    }
+
     if (!message) {
 
       res.status(400).json({ error: 'Message is required' });
@@ -211,7 +244,7 @@ Output JSON format with keys:
 
     const response = await ai.models.generateContent({
 
-      model: 'gemini-3.6-flash',
+      model: GEMINI_MODEL,
 
       contents: prompt,
 
@@ -390,8 +423,6 @@ Return JSON only:
       return;
 
     }
-
-    const GEMINI_MODEL = "gemini-3.6-flash";
 
     const requestBody = {
 
